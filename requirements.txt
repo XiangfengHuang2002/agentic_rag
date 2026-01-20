@@ -1,0 +1,12 @@
+langgraph
+chromadb
+requests
+python-dotenv
+jupyter
+evaluate
+rouge_score
+bert_score
+nltk
+absl-py
+matplotlib
+seaborn

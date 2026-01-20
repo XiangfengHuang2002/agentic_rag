@@ -1,0 +1,21 @@
+# 隐私文件
+.env
+
+# Python 虚拟环境
+venv/
+ENV/
+env/
+
+# Jupyter Notebook 检查点
+.ipynb_checkpoints/
+
+# 编译文件
+__pycache__/
+*.py[cod]
+
+# 本地向量库 (如果库太大，建议不上传，让用户运行代码生成)
+# chroma_db/ 
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
