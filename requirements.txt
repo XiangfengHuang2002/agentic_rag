@@ -10,3 +10,6 @@ nltk
 absl-py
 matplotlib
 seaborn
+sse_starlette
+fastapi
+uvicorn

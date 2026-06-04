@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Wiki RAG 监控看板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 h-screen flex flex-col">
+
+    <header class="bg-gray-800 p-4 border-b border-gray-700 shadow-md">
+        <h1 class="text-xl font-bold text-cyan-400">Game Wiki RAG 实时决策监控系统</h1>
+    </header>
+
+    <div class="flex-1 flex overflow-hidden">
+        <div class="w-1/2 flex flex-col border-r border-gray-700 bg-gray-950">
+            <div id="chat-box" class="flex-1 p-4 overflow-y-auto space-y-4">
+                <div class="bg-gray-800 p-3 rounded-lg max-w-[80%] text-gray-300">
+                    你好！我是游戏知识助手，请向我提问。右侧面板将实时展示我的 RAG 决策和召回过程。
+                </div>
+            </div>
+            <div class="p-4 bg-gray-900 border-t border-gray-700 flex gap-2">
+                <input id="user-input" type="text" class="flex-1 bg-gray-800 border border-gray-600 rounded px-4 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="输入关于游戏机制的提问...">
+                <button id="send-btn" class="bg-cyan-600 hover:bg-cyan-500 text-white px-6 py-2 rounded font-medium transition">发送</button>
+            </div>
+        </div>
+
+        <div class="w-1/2 p-6 overflow-y-auto space-y-6 bg-gray-900">
+            <h2 class="text-lg font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-2">RAG 实时思考追踪</h2>
+            
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-3">
+                <h3 class="text-sm font-medium text-gray-400">当前执行状态</h3>
+                <div id="status-monitor" class="text-cyan-400 font-mono text-sm">等待输入指令...</div>
+            </div>
+
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-4">
+                <h3 class="text-sm font-medium text-gray-400">路由决策与知识可信度</h3>
+                <div class="flex items-center justify-between text-sm">
+                    <span>最高向量相似度 (Vector Distance):</span>
+                    <span id="decision-score" class="font-bold text-white">0.0000</span>
+                </div>
+                <div class="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+                    <div id="score-bar" class="bg-gray-500 h-3 transition-all duration-500" style="width: 0%"></div>
+                </div>
+                <div class="flex justify-between text-xs text-gray-500">
+                    <span>不相关 (0.0)</span>
+                    <span class="text-red-400 font-semibold">防幻觉阈值 (0.35)</span>
+                    <span>强相关 (1.5+)</span>
+                </div>
+                <div id="decision-badge" class="inline-block px-3 py-1 rounded text-xs font-bold bg-gray-700 text-gray-400">
+                    未触发决策
+                </div>
+            </div>
+
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-3">
+                <h3 class="text-sm font-medium text-gray-400">LangGraph 当前节点</h3>
+                <div class="flex items-center justify-between text-sm">
+                    <span>当前节点</span>
+                    <span id="current-node" class="font-bold text-cyan-300">等待输入</span>
+                </div>
+                <div id="node-log" class="max-h-40 overflow-y-auto text-xs text-gray-300 space-y-1 bg-gray-900 p-2 rounded border border-gray-700"></div>
+            </div>
+
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-3">
+                <h3 class="text-sm font-medium text-gray-400">实时路由决策</h3>
+                <div id="node-decision" class="text-sm text-gray-200">等待决策事件...</div>
+            </div>
+
+            <div class="space-y-3">
+                <h3 class="text-sm font-medium text-gray-400">召回本地 Chunks (Top 5 详情)</h3>
+                <div id="chunks-container" class="space-y-3">
+                    <div class="text-gray-500 text-sm italic">暂无召回数据</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chatBox = document.getElementById('chat-box');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        const statusMonitor = document.getElementById('status-monitor');
+        const decisionScore = document.getElementById('decision-score');
+        const scoreBar = document.getElementById('score-bar');
+        const decisionBadge = document.getElementById('decision-badge');
+        const chunksContainer = document.getElementById('chunks-container');
+        const currentNode = document.getElementById('current-node');
+        const nodeLog = document.getElementById('node-log');
+        const nodeDecision = document.getElementById('node-decision');
+
+        sendBtn.addEventListener('click', startChat);
+        userInput.addEventListener('keydown', (e) => { if(e.key === 'Enter') startChat(); });
+
+        function startChat() {
+            const query = userInput.value.trim();
+            if(!query) return;
+
+            appendMessage('user', query);
+            userInput.value = '';
+
+            statusMonitor.textContent = "正在建立连接...";
+            decisionScore.textContent = "0.0000";
+            scoreBar.style.width = "0%";
+            scoreBar.className = "bg-gray-500 h-3 transition-all duration-500";
+            decisionBadge.textContent = "正在决策...";
+            decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-yellow-600 text-white";
+            currentNode.textContent = "等待节点...";
+            nodeLog.innerHTML = '';
+            nodeDecision.textContent = "等待决策事件...";
+            chunksContainer.innerHTML = '<div class="text-gray-500 text-sm italic">正在检索向量库...</div>';
+
+            const answerDiv = appendMessage('assistant', '正在思考...');
+
+            const eventSource = new EventSource(`http://127.0.0.1:8000/api/chat/stream?query=${encodeURIComponent(query)}`);
+
+            eventSource.addEventListener('status', (e) => {
+                const data = JSON.parse(e.data);
+                statusMonitor.textContent = data.message;
+            });
+
+            eventSource.addEventListener('node', (e) => {
+                const data = JSON.parse(e.data);
+                const nodeName = data.node || data.name || 'unknown';
+                currentNode.textContent = nodeName;
+
+                const logItem = document.createElement('div');
+                logItem.className = "px-2 py-1 rounded bg-gray-900 border border-gray-700";
+                logItem.textContent = `[${nodeName}] ${data.message || data.detail || ''}`;
+                nodeLog.appendChild(logItem);
+                nodeLog.scrollTop = nodeLog.scrollHeight;
+
+                if (data.decision) {
+                    nodeDecision.textContent = data.decision;
+                }
+            });
+
+            eventSource.addEventListener('decision', (e) => {
+                const data = JSON.parse(e.data);
+                const score = data.score;
+                decisionScore.textContent = score.toFixed(4);
+                nodeDecision.textContent = data.need_rag ? 'RAG 路径已触发' : '未触发 RAG，转普通回答';
+                currentNode.textContent = '决策节点';
+                
+                let percentage = Math.min((score / 1.5) * 100, 100);
+                scoreBar.style.width = `${percentage}%`;
+
+                if (data.need_rag) {
+                    scoreBar.className = "bg-green-500 h-3 transition-all duration-500";
+                    decisionBadge.textContent = "通过：触发本地 RAG 增强";
+                    decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-green-600 text-white";
+                } else {
+                    scoreBar.className = "bg-red-500 h-3 transition-all duration-500";
+                    decisionBadge.textContent = "拒绝：低于阈值，转通用回答";
+                    decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-red-600 text-white";
+                }
+
+                if (data.chunks && data.chunks.length > 0) {
+                    chunksContainer.innerHTML = '';
+                    data.chunks.forEach((chunk, i) => {
+                        const card = document.createElement('div');
+                        card.className = "bg-gray-800 p-3 rounded border border-gray-700 space-y-1 text-xs";
+                        card.innerHTML = `
+                            <div class="flex justify-between font-semibold text-gray-400">
+                                <span class="text-cyan-400">Chunk #${i+1}</span>
+                                <span>原始相似度: <span class="text-white">${chunk.vector_sim.toFixed(4)}</span> | 重排得分: <span class="text-white">${chunk.rerank_score.toFixed(4)}</span></span>
+                            </div>
+                            <p class="text-gray-300 font-mono mt-1 whitespace-pre-line leading-relaxed">${chunk.content}</p>
+                        `;
+                        chunksContainer.appendChild(card);
+                    });
+                } else {
+                    chunksContainer.innerHTML = '<div class="text-gray-500 text-sm italic">未命中或未采用任何知识切片</div>';
+                }
+            });
+
+            eventSource.addEventListener('evaluation', (e) => {
+                const data = JSON.parse(e.data);
+                const statusText = data.answer_correct ? '答案通过检查' : '答案未通过检查';
+                nodeDecision.textContent = `${statusText} (第 ${data.step} 轮)`;
+
+                if (!data.answer_correct) {
+                    decisionBadge.textContent = '未通过，继续优化答案';
+                    decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-yellow-600 text-white";
+                }
+            });
+
+            eventSource.addEventListener('result', (e) => {
+                const data = JSON.parse(e.data);
+                answerDiv.innerHTML = data.answer.replace(/\n/g, '<br>');
+                statusMonitor.textContent = "执行完毕。";
+                eventSource.close();
+            });
+
+            eventSource.addEventListener('error', (e) => {
+                statusMonitor.textContent = "接口请求发生异常断开。";
+                answerDiv.textContent = "响应失败，请检查后端服务。";
+                eventSource.close();
+            });
+        }
+
+        function appendMessage(sender, text) {
+            const div = document.createElement('div');
+            if(sender === 'user') {
+                div.className = "bg-cyan-700 text-white p-3 rounded-lg max-w-[80%] ml-auto text-right";
+            } else {
+                div.className = "bg-gray-800 p-3 rounded-lg max-w-[80%] text-gray-300 font-sans leading-relaxed";
+            }
+            div.innerHTML = text;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+            return div;
+        }
+    </script>
+</body>
+</html>
