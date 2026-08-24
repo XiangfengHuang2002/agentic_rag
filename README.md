@@ -101,3 +101,36 @@ pip install -r requirements.txt
 
 2. **API 配置**:
 在根目录创建 `.env` 文件并配置 `SILICONFLOW_API_KEY`。
+
+## 快速上手（本地演示）
+
+1. 创建并激活虚拟环境（Windows PowerShell）：
+```
+python -m venv venv
+& .\\venv\\Scripts\\Activate.ps1
+```
+2. 安装依赖：
+```
+pip install -r requirements.txt
+```
+3. 启动服务：
+```
+uvicorn src.api:app --host 127.0.0.1 --port 8000
+```
+
+说明：服务提供 SSE 接口 `/api/chat/stream`，前端或客户端可以通过该接口接收 `status`、`decision`、`result`、`error` 等事件以实现实时流水线展示。项目不再包含本地演示客户端或仪表盘示例。
+
+## LangGraph 集成说明
+
+本项目可选使用 LangGraph 做为编排层以明确将检索、判定、生成等步骤拆解为节点。关键点：
+
+- 节点：`retrieve`（检索 Top-K）、`decide`（基于向量相似度/重排得分判定是否需要 RAG）、`call_llm`（传入已构造的 prompt 并调用模型）。
+- 接口契约：如果启用了 LangGraph 编排器，服务层会尝试实例化 `src.langgraph_orchestrator.LangGraphAgent`；编排器应至少暴露：
+  - `run_query(query: str) -> str`：按编排流程返回最终字符串回答（可选，用于完整编排模式）。
+  - `base_agent`（可选）：当需要直接调用底层模型时，`base_agent` 应包含 `_call_llm(messages)` 用于传入已构造的 `messages`。
+- SSE 事件：编排器在执行过程中应通过 API 层发送 `node` 事件来报告当前 LangGraph 节点与内部日志，前端可据此展示当前节点名称与运行信息。事件字段示例：
+  ```json
+  {"node":"retrieve","message":"检索到 5 条候选"}
+  ```
+
+启用方法：在项目根安装依赖并启动服务后（见快速上手），访问 `http://127.0.0.1:8000/` 即可打开集成前端看板（`index.html`），输入问题并观察侧栏中 `RAG 实时思考追踪` 的节点与决策流。若需要在部署环境放置前端静态文件，请将 `index.html` 与相关静态资源放到部署的静态根目录并确保后端的 CORS/静态配置允许访问。

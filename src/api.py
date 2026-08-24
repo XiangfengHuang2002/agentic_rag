@@ -5,17 +5,28 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
-from src.agent import GameAgent
+try:
+    from src.langgraph_orchestrator import LangGraphAgent as OrchestratorAgent
+    ORCHESTRATOR_AVAILABLE = True
+except Exception:
+    from src.agent import GameAgent
+    OrchestratorAgent = None
+    ORCHESTRATOR_AVAILABLE = False
 
 agent = None
-THRESHOLD = 0.5  # 对齐 v3 的判定阈值
+THRESHOLD = 0.35  # 对齐 v3 的判定阈值
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global agent
     print("正在初始化智能体并加载向量数据库客户端...")
     try:
-        agent = GameAgent()
+        if ORCHESTRATOR_AVAILABLE and OrchestratorAgent is not None:
+            agent = OrchestratorAgent()
+            print("使用 LangGraph 编排器启动智能体")
+        else:
+            agent = GameAgent()
+            print("使用常规模型 GameAgent 启动智能体（未检测到 LangGraph 编排器）")
         print("智能体 API 服务成功拉起，准备就绪。")
     except Exception as e:
         print(f"智能体初始化失败: {e}")
@@ -23,7 +34,7 @@ async def lifespan(app: FastAPI):
     yield
     print("智能体 API 服务正在关闭...")
 
-app = FastAPI(title="Game Wiki RAG API", lifespan=lifespan)
+app = FastAPI(title="游戏知识 RAG API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,6 +52,11 @@ async def chat_stream_generator(query: str):
         await asyncio.sleep(0.1)
         
         retrieved_chunks = agent.retriever.search(query, top_k=5)
+        # 发送检索节点事件
+        try:
+            yield {"event": "node", "data": json.dumps({"node": "retrieve", "message": f"粗筛召回 {len(retrieved_chunks)} 条候选"})}
+        except Exception:
+            pass
         
         if not retrieved_chunks:
             yield {"event": "decision", "data": json.dumps({"need_rag": False, "score": 0.0, "reason": "未检索到任何背景片段"})}
@@ -57,6 +73,12 @@ async def chat_stream_generator(query: str):
                 } for c in retrieved_chunks
             ]
             
+            # 发送重排/判定节点事件摘要
+            try:
+                yield {"event": "node", "data": json.dumps({"node": "decide", "message": f"最高相似度 {highest_vector_sim:.4f}，阈值 {THRESHOLD}"})}
+            except Exception:
+                pass
+
             yield {
                 "event": "decision", 
                 "data": json.dumps({
@@ -69,6 +91,11 @@ async def chat_stream_generator(query: str):
             chunks_to_llm = retrieved_chunks if need_rag else []
             await asyncio.sleep(0.1)
 
+        # 发送模型调用节点事件
+        try:
+            yield {"event": "node", "data": json.dumps({"node": "call_llm", "message": "正在调用大模型生成最终回复"})}
+        except Exception:
+            pass
         yield {"event": "status", "data": json.dumps({"message": "正在调用大模型生成最终回复..."})}
         
         context_text = "\n---\n".join([chunk["content"] for chunk in chunks_to_llm]) if chunks_to_llm else ""
@@ -82,7 +109,20 @@ async def chat_stream_generator(query: str):
             {"role": "user", "content": query}
         ]
         
-        answer = agent._call_llm(messages)
+        # 支持原始的 GameAgent（提供 _call_llm）
+        # 以及基于 LangGraph 的编排器（提供 run_query）。
+        if hasattr(agent, "_call_llm"):
+            answer = agent._call_llm(messages)
+        elif hasattr(agent, "run_query"):
+            # 若 agent 包装了 base_agent（如 LangGraphAgent），优先调用其 base_agent._call_llm
+            # 并传入已构建的 `messages`，避免重复检索。
+            if hasattr(agent, "base_agent") and hasattr(agent.base_agent, "_call_llm"):
+                answer = agent.base_agent._call_llm(messages)
+            else:
+                # run_query 会在内部完成检索与判定，直接传入用户 query。
+                answer = agent.run_query(query)
+        else:
+            raise RuntimeError("Agent 未暴露兼容的调用接口")
         
         yield {"event": "result", "data": json.dumps({"answer": answer})}
         
