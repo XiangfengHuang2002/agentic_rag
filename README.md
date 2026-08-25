@@ -118,7 +118,7 @@ pip install -r requirements.txt
 uvicorn src.api:app --host 127.0.0.1 --port 8000
 ```
 
-说明：服务提供 SSE 接口 `/api/chat/stream`，前端或客户端可以通过该接口接收 `status`、`decision`、`result`、`error` 等事件以实现实时流水线展示。项目不再包含本地演示客户端或仪表盘示例。
+说明：服务提供 SSE 接口 `/api/chat/stream`，前端或客户端可以通过该接口接收 `status`、`node`、`decision`、`result`、`error` 等事件以实现实时流水线展示。仓库中的 `index.html` 是独立前端页面，需单独打开或通过静态服务器提供。
 
 ## LangGraph 集成说明
 
@@ -133,4 +133,4 @@ uvicorn src.api:app --host 127.0.0.1 --port 8000
   {"node":"retrieve","message":"检索到 5 条候选"}
   ```
 
-启用方法：在项目根安装依赖并启动服务后（见快速上手），访问 `http://127.0.0.1:8000/` 即可打开集成前端看板（`index.html`），输入问题并观察侧栏中 `RAG 实时思考追踪` 的节点与决策流。若需要在部署环境放置前端静态文件，请将 `index.html` 与相关静态资源放到部署的静态根目录并确保后端的 CORS/静态配置允许访问。
+启用方法：在项目根安装依赖并启动服务后（见快速上手），单独打开 `index.html`，输入问题并观察侧栏中的检索节点、决策流和召回片段。若通过静态服务器提供页面，请确保后端地址为 `http://127.0.0.1:8000` 且 CORS 配置允许访问。

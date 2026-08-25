@@ -1,6 +1,12 @@
 import os
 import requests
-from src.config import SILICONFLOW_API_KEY, SILICONFLOW_BASE_URL, LLM_MODEL, VECTOR_SEARCH_THRESHOLD
+from src.config import (
+    SILICONFLOW_API_KEY,
+    SILICONFLOW_BASE_URL,
+    LLM_MODEL,
+    VECTOR_SEARCH_THRESHOLD,
+    REACT_MAX_STEPS,
+)
 from src.retriever import WikiRetriever
 
 class GameAgent:
@@ -64,6 +70,106 @@ class GameAgent:
         except Exception as e:
             print(f"大模型调用失败: {e}")
             return "服务响应失败，请稍后重试。"
+
+    def run_react_query(self, query: str, initial_chunks: list | None = None) -> str:
+        """执行 ReAct 循环：行动、观察，再回答。"""
+        print(f"ReAct 智能体收到问题: {query}")
+        messages = [{
+            "role": "system",
+            "content": (
+                "你是游戏知识助手。你可以使用一个工具：search_knowledge(query)，用于检索本地知识库。\n"
+                "每轮只能输出一行：行动: search\n查询: 你的检索词，或行动: final\n答案: 你的最终答案。\n"
+                "需要事实依据时先检索；已有足够依据时直接回答。不要编造知识。"
+            ),
+        }, {"role": "user", "content": query}]
+        observations = []
+
+        if initial_chunks is not None:
+            observation = self._format_react_observation(initial_chunks)
+            observations.append(observation)
+            messages.append({
+                "role": "user",
+                "content": f"初始检索结果：\n{observation}\n请根据结果决定下一步行动。",
+            })
+
+        for step in range(max(1, REACT_MAX_STEPS)):
+            try:
+                decision = self._call_llm(messages).strip()
+            except Exception as e:
+                print(f"ReAct 第 {step + 1} 步调用失败: {e}")
+                return "服务响应失败，请稍后重试。"
+
+            normalized_decision = decision.lower().replace(" ", "")
+            if (
+                "行动:search" in normalized_decision
+                or "行动：search" in normalized_decision
+                or "action:search" in normalized_decision
+                or "action：search" in normalized_decision
+            ):
+                search_query = self._extract_react_query(decision) or query
+                chunks = self.retriever.search(search_query, top_k=5)
+                observation = self._format_react_observation(chunks)
+                observations.append(observation)
+                messages.extend([
+                    {"role": "assistant", "content": decision},
+                    {"role": "user", "content": f"观察结果：\n{observation}\n请继续决定行动。"},
+                ])
+                continue
+
+            answer = self._extract_react_answer(decision)
+            if answer:
+                return answer
+
+            messages.extend([
+                {"role": "assistant", "content": decision},
+                {"role": "user", "content": "请按规定格式输出行动或最终答案。"},
+            ])
+
+        evidence = "\n\n".join(observations)
+        final_messages = [{
+            "role": "system",
+            "content": "根据提供的检索结果回答。没有依据时只回答‘不知道’，不要编造。",
+        }, {
+            "role": "user",
+            "content": f"问题：{query}\n检索结果：\n{evidence or '无'}",
+        }]
+        try:
+            return self._call_llm(final_messages)
+        except Exception as e:
+            print(f"ReAct 最终回答失败: {e}")
+            return "服务响应失败，请稍后重试。"
+
+    @staticmethod
+    def _extract_react_query(decision: str) -> str:
+        for marker in ("查询:", "查询：", "query:", "query："):
+            if marker in decision:
+                return decision.split(marker, 1)[1].splitlines()[0].strip()
+        return ""
+
+    @staticmethod
+    def _extract_react_answer(decision: str) -> str:
+        for marker in (
+            "答案:",
+            "答案：",
+            "最终答案:",
+            "最终答案：",
+            "answer:",
+            "answer：",
+            "final answer:",
+            "final answer：",
+        ):
+            if marker in decision:
+                return decision.split(marker, 1)[1].strip()
+        return decision if not decision.startswith(("行动", "action")) else ""
+
+    @staticmethod
+    def _format_react_observation(chunks: list) -> str:
+        if not chunks:
+            return "未检索到相关知识。"
+        return "\n---\n".join(
+            f"{index}. {chunk['content']}（相似度：{chunk['vector_sim']:.4f}）"
+            for index, chunk in enumerate(chunks, 1)
+        )
 
 if __name__ == "__main__":
     agent = GameAgent()

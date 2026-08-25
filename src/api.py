@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
+from src.config import AGENT_MODE, VECTOR_SEARCH_THRESHOLD
 try:
     from src.langgraph_orchestrator import LangGraphAgent as OrchestratorAgent
     ORCHESTRATOR_AVAILABLE = True
@@ -14,7 +15,7 @@ except Exception:
     ORCHESTRATOR_AVAILABLE = False
 
 agent = None
-THRESHOLD = 0.35  # 对齐 v3 的判定阈值
+THRESHOLD = float(VECTOR_SEARCH_THRESHOLD)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -50,6 +51,23 @@ async def chat_stream_generator(query: str):
     try:
         yield {"event": "status", "data": json.dumps({"message": "正在进行实时向量化并检索..."})}
         await asyncio.sleep(0.1)
+
+        if AGENT_MODE == "react" and hasattr(agent, "run_react_query"):
+            retrieved_chunks = agent.retriever.search(query, top_k=5)
+            yield {"event": "node", "data": json.dumps({
+                "node": "retrieve",
+                "message": f"初始检索召回 {len(retrieved_chunks)} 条候选",
+            }, ensure_ascii=False)}
+            yield {"event": "decision", "data": json.dumps(
+                _build_decision_data(retrieved_chunks), ensure_ascii=False
+            )}
+            yield {"event": "node", "data": json.dumps({
+                "node": "react",
+                "message": "正在执行 ReAct 推理循环",
+            }, ensure_ascii=False)}
+            answer = agent.run_react_query(query, retrieved_chunks)
+            yield {"event": "result", "data": json.dumps({"answer": answer})}
+            return
         
         retrieved_chunks = agent.retriever.search(query, top_k=5)
         # 发送检索节点事件
@@ -129,6 +147,33 @@ async def chat_stream_generator(query: str):
     except Exception as e:
         print(f"流式 API 内部发生异常: {e}")
         yield {"event": "error", "data": json.dumps({"detail": str(e)})}
+
+
+def _build_decision_data(retrieved_chunks: list) -> dict:
+    """整理前端需要的检索结果与门控信息。"""
+    if not retrieved_chunks:
+        return {
+            "need_rag": False,
+            "score": 0.0,
+            "threshold": THRESHOLD,
+            "chunks": [],
+            "reason": "未检索到任何背景片段",
+        }
+
+    score = float(max(chunk.get("vector_sim", 0.0) for chunk in retrieved_chunks))
+    return {
+        "need_rag": score >= THRESHOLD,
+        "score": score,
+        "threshold": THRESHOLD,
+        "chunks": [
+            {
+                "content": chunk.get("content", ""),
+                "vector_sim": float(chunk.get("vector_sim", 0.0)),
+                "rerank_score": float(chunk.get("rerank_score", 0.0)),
+            }
+            for chunk in retrieved_chunks
+        ],
+    }
 
 @app.get("/api/chat/stream")
 def chat_stream(query: str = Query(..., description="用户提问内容")):

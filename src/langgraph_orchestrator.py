@@ -115,6 +115,10 @@ class LangGraphAgent:
     def _sequential_run(self, query: str) -> str:
         return self.base_agent.run_query(query)
 
+    def run_react_query(self, query: str, initial_chunks: list | None = None) -> str:
+        """转发 ReAct 执行入口。"""
+        return self.base_agent.run_react_query(query, initial_chunks)
+
     # 兼容性 shim：暴露 _call_llm 以匹配 GameAgent API
     def _call_llm(self, messages: list) -> str:
         if hasattr(self, "base_agent") and hasattr(self.base_agent, "_call_llm"):
