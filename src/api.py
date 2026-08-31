@@ -3,16 +3,12 @@ import asyncio
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from src.config import AGENT_MODE, VECTOR_SEARCH_THRESHOLD
-try:
-    from src.langgraph_orchestrator import LangGraphAgent as OrchestratorAgent
-    ORCHESTRATOR_AVAILABLE = True
-except Exception:
-    from src.agent import GameAgent
-    OrchestratorAgent = None
-    ORCHESTRATOR_AVAILABLE = False
+from src.langgraph_orchestrator import LangGraphAgent as OrchestratorAgent
+from src.agent import GameAgent
 
 agent = None
 THRESHOLD = float(VECTOR_SEARCH_THRESHOLD)
@@ -22,12 +18,14 @@ async def lifespan(app: FastAPI):
     global agent
     print("正在初始化智能体并加载向量数据库客户端...")
     try:
-        if ORCHESTRATOR_AVAILABLE and OrchestratorAgent is not None:
+        if OrchestratorAgent is not None:
             agent = OrchestratorAgent()
             print("使用 LangGraph 编排器启动智能体")
         else:
             agent = GameAgent()
             print("使用常规模型 GameAgent 启动智能体（未检测到 LangGraph 编排器）")
+
+        app.state.agent = agent
         print("智能体 API 服务成功拉起，准备就绪。")
     except Exception as e:
         print(f"智能体初始化失败: {e}")
@@ -45,15 +43,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+async def serve_index():
+    return FileResponse("index.html")
+
 async def chat_stream_generator(query: str):
     print(f"API 接收到流式请求，用户提问: {query}")
+    current_agent = app.state.agent if hasattr(app.state, "agent") else agent
     
     try:
         yield {"event": "status", "data": json.dumps({"message": "正在进行实时向量化并检索..."})}
         await asyncio.sleep(0.1)
 
-        if AGENT_MODE == "react" and hasattr(agent, "run_react_query"):
-            retrieved_chunks = agent.retriever.search(query, top_k=5)
+        if current_agent is None:
+            raise RuntimeError("智能体尚未初始化完成，请检查应用启动状态")
+
+        if AGENT_MODE == "react" and hasattr(current_agent, "run_react_query"):
+            retrieved_chunks = current_agent.retriever.search(query, top_k=5)
             yield {"event": "node", "data": json.dumps({
                 "node": "retrieve",
                 "message": f"初始检索召回 {len(retrieved_chunks)} 条候选",
@@ -65,11 +71,11 @@ async def chat_stream_generator(query: str):
                 "node": "react",
                 "message": "正在执行 ReAct 推理循环",
             }, ensure_ascii=False)}
-            answer = agent.run_react_query(query, retrieved_chunks)
+            answer = current_agent.run_react_query(query, retrieved_chunks)
             yield {"event": "result", "data": json.dumps({"answer": answer})}
             return
         
-        retrieved_chunks = agent.retriever.search(query, top_k=5)
+        retrieved_chunks = current_agent.retriever.search(query, top_k=5)
         # 发送检索节点事件
         try:
             yield {"event": "node", "data": json.dumps({"node": "retrieve", "message": f"粗筛召回 {len(retrieved_chunks)} 条候选"})}
@@ -129,16 +135,16 @@ async def chat_stream_generator(query: str):
         
         # 支持原始的 GameAgent（提供 _call_llm）
         # 以及基于 LangGraph 的编排器（提供 run_query）。
-        if hasattr(agent, "_call_llm"):
-            answer = agent._call_llm(messages)
-        elif hasattr(agent, "run_query"):
+        if hasattr(current_agent, "_call_llm"):
+            answer = current_agent._call_llm(messages)
+        elif hasattr(current_agent, "run_query"):
             # 若 agent 包装了 base_agent（如 LangGraphAgent），优先调用其 base_agent._call_llm
             # 并传入已构建的 `messages`，避免重复检索。
-            if hasattr(agent, "base_agent") and hasattr(agent.base_agent, "_call_llm"):
-                answer = agent.base_agent._call_llm(messages)
+            if hasattr(current_agent, "base_agent") and hasattr(current_agent.base_agent, "_call_llm"):
+                answer = current_agent.base_agent._call_llm(messages)
             else:
                 # run_query 会在内部完成检索与判定，直接传入用户 query。
-                answer = agent.run_query(query)
+                answer = current_agent.run_query(query)
         else:
             raise RuntimeError("Agent 未暴露兼容的调用接口")
         
