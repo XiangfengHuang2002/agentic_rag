@@ -50,7 +50,7 @@ class WikiRetriever:
         response.raise_for_status()
         return response.json()["results"]
 
-    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         print(f"收到用户提问: '{query}'，开始进行实时向量化并检索...")
         
         try:

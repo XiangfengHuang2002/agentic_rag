@@ -72,71 +72,35 @@ class GameAgent:
             return "服务响应失败，请稍后重试。"
 
     def run_react_query(self, query: str, initial_chunks: list | None = None) -> str:
-        """执行 ReAct 循环：行动、观察，再回答。"""
-        print(f"ReAct 智能体收到问题: {query}")
-        messages = [{
-            "role": "system",
-            "content": (
-                "你是游戏知识助手。你可以使用一个工具：search_knowledge(query)，用于检索本地知识库。\n"
-                "每轮只能输出一行：行动: search\n查询: 你的检索词，或行动: final\n答案: 你的最终答案。\n"
-                "需要事实依据时先检索；已有足够依据时直接回答。不要编造知识。"
-            ),
-        }, {"role": "user", "content": query}]
-        observations = []
+        """兼容性降级：真正的 ReAct 决策循环已移交给 LangGraph。
+        """
+        print(f"ReAct 兼容降级执行，问题: {query}")
 
-        if initial_chunks is not None:
-            observation = self._format_react_observation(initial_chunks)
-            observations.append(observation)
-            messages.append({
+        evidence = ""
+        if initial_chunks:
+            evidence = self._format_react_observation(initial_chunks)
+
+        if evidence:
+            final_messages = [{
+                "role": "system",
+                "content": "根据提供的检索结果回答。没有依据时只回答‘不知道’，不要编造。",
+            }, {
                 "role": "user",
-                "content": f"初始检索结果：\n{observation}\n请根据结果决定下一步行动。",
-            })
+                "content": f"问题：{query}\n检索结果：\n{evidence}",
+            }]
+        else:
+            final_messages = [{
+                "role": "system",
+                "content": "如果无法从知识库中准确确认事实，请直接回答不知道，不要编造。",
+            }, {
+                "role": "user",
+                "content": query,
+            }]
 
-        for step in range(max(1, REACT_MAX_STEPS)):
-            try:
-                decision = self._call_llm(messages).strip()
-            except Exception as e:
-                print(f"ReAct 第 {step + 1} 步调用失败: {e}")
-                return "服务响应失败，请稍后重试。"
-
-            normalized_decision = decision.lower().replace(" ", "")
-            if (
-                "行动:search" in normalized_decision
-                or "行动：search" in normalized_decision
-                or "action:search" in normalized_decision
-                or "action：search" in normalized_decision
-            ):
-                search_query = self._extract_react_query(decision) or query
-                chunks = self.retriever.search(search_query, top_k=5)
-                observation = self._format_react_observation(chunks)
-                observations.append(observation)
-                messages.extend([
-                    {"role": "assistant", "content": decision},
-                    {"role": "user", "content": f"观察结果：\n{observation}\n请继续决定行动。"},
-                ])
-                continue
-
-            answer = self._extract_react_answer(decision)
-            if answer:
-                return answer
-
-            messages.extend([
-                {"role": "assistant", "content": decision},
-                {"role": "user", "content": "请按规定格式输出行动或最终答案。"},
-            ])
-
-        evidence = "\n\n".join(observations)
-        final_messages = [{
-            "role": "system",
-            "content": "根据提供的检索结果回答。没有依据时只回答‘不知道’，不要编造。",
-        }, {
-            "role": "user",
-            "content": f"问题：{query}\n检索结果：\n{evidence or '无'}",
-        }]
         try:
             return self._call_llm(final_messages)
         except Exception as e:
-            print(f"ReAct 最终回答失败: {e}")
+            print(f"ReAct 兼容降级最终回答失败: {e}")
             return "服务响应失败，请稍后重试。"
 
     @staticmethod
