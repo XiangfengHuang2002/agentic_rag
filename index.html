@@ -34,6 +34,31 @@
             </div>
 
             <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-4">
+                <h3 class="text-sm font-medium text-gray-400">ReAct 实时状态</h3>
+                <div class="grid grid-cols-2 gap-3 text-sm">
+                    <div class="bg-gray-900 p-3 rounded border border-gray-700">
+                        <div class="text-gray-400">当前步骤</div>
+                        <div id="react-step" class="mt-1 text-xl font-bold text-cyan-300">等待开始</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded border border-gray-700">
+                        <div class="text-gray-400">当前动作</div>
+                        <div id="react-action" class="mt-1 text-xl font-bold text-cyan-300">等待</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded border border-gray-700">
+                        <div class="text-gray-400">证据数</div>
+                        <div id="react-evidence" class="mt-1 text-xl font-bold text-cyan-300">0 条</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded border border-gray-700">
+                        <div class="text-gray-400">观察分数</div>
+                        <div id="react-score" class="mt-1 text-xl font-bold text-cyan-300">0.0000</div>
+                    </div>
+                </div>
+                <div id="react-summary" class="text-sm text-gray-300 bg-gray-900 p-3 rounded border border-gray-700">
+                    等待进入 ReAct 推理循环...
+                </div>
+            </div>
+
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-4">
                 <h3 class="text-sm font-medium text-gray-400">路由决策与知识可信度</h3>
                 <div class="flex items-center justify-between text-sm">
                     <span>最高向量相似度 (Vector Distance):</span>
@@ -87,6 +112,11 @@
         const currentNode = document.getElementById('current-node');
         const nodeLog = document.getElementById('node-log');
         const nodeDecision = document.getElementById('node-decision');
+        const reactStep = document.getElementById('react-step');
+        const reactAction = document.getElementById('react-action');
+        const reactEvidence = document.getElementById('react-evidence');
+        const reactScore = document.getElementById('react-score');
+        const reactSummary = document.getElementById('react-summary');
 
         sendBtn.addEventListener('click', startChat);
         userInput.addEventListener('keydown', (e) => { if(e.key === 'Enter') startChat(); });
@@ -107,6 +137,11 @@
             currentNode.textContent = "等待节点...";
             nodeLog.innerHTML = '';
             nodeDecision.textContent = "等待决策事件...";
+            reactStep.textContent = '等待开始';
+            reactAction.textContent = '等待';
+            reactEvidence.textContent = '0 条';
+            reactScore.textContent = '0.0000';
+            reactSummary.textContent = '等待进入 ReAct 推理循环...';
             chunksContainer.innerHTML = '<div class="text-gray-500 text-sm italic">正在检索向量库...</div>';
 
             const answerDiv = appendMessage('assistant', '正在思考...');
@@ -129,6 +164,17 @@
                 nodeLog.appendChild(logItem);
                 nodeLog.scrollTop = nodeLog.scrollHeight;
 
+                if (nodeName === 'react' || data.action) {
+                    const step = Number(data.step ?? 1);
+                    const score = Number(data.score ?? 0);
+                    const evidenceCount = Number(data.evidence_count ?? (data.chunks ? data.chunks.length : 0));
+                    reactStep.textContent = `第 ${step} 步`;
+                    reactAction.textContent = String(data.action || 'search');
+                    reactEvidence.textContent = `${evidenceCount} 条`;
+                    reactScore.textContent = score.toFixed(4);
+                    reactSummary.textContent = data.message || 'ReAct 观察中...';
+                }
+
                 if (data.decision) {
                     nodeDecision.textContent = data.decision;
                 }
@@ -136,22 +182,42 @@
 
             eventSource.addEventListener('decision', (e) => {
                 const data = JSON.parse(e.data);
-                const score = data.score;
-                decisionScore.textContent = score.toFixed(4);
-                nodeDecision.textContent = data.need_rag ? 'RAG 路径已触发' : '未触发 RAG，转普通回答';
-                currentNode.textContent = '决策节点';
-                
-                let percentage = Math.min((score / 1.5) * 100, 100);
-                scoreBar.style.width = `${percentage}%`;
+                const score = Number(data.score ?? 0);
+                const threshold = Number(data.threshold ?? 0.5);
+                const isReactMode = String(data.mode || '').toLowerCase() === 'react' || /react/i.test(String(data.reason || ''));
+                const reason = data.reason || (data.need_rag ? '高于阈值，转入知识增强回答' : '低于阈值，转通用回答');
 
-                if (data.need_rag) {
-                    scoreBar.className = "bg-green-500 h-3 transition-all duration-500";
-                    decisionBadge.textContent = "通过：触发本地 RAG 增强";
-                    decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-green-600 text-white";
+                decisionScore.textContent = score.toFixed(4);
+                currentNode.textContent = isReactMode ? 'react' : '决策节点';
+
+                if (isReactMode) {
+                    const evidenceCount = Number(data.chunks?.length ?? 0);
+                    reactStep.textContent = '第 1 步';
+                    reactAction.textContent = 'search';
+                    reactEvidence.textContent = `${evidenceCount} 条`;
+                    reactScore.textContent = score.toFixed(4);
+                    reactSummary.textContent = '观察到检索结果，ReAct 正在基于证据做下一步动作';
+                    nodeDecision.textContent = `ReAct 迭代：已接入 ${evidenceCount} 条召回证据，当前观察分数 ${score.toFixed(4)}`;
+                    scoreBar.className = "bg-cyan-500 h-3 transition-all duration-500";
+                    decisionBadge.textContent = reason;
+                    decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-cyan-600 text-white";
+                    scoreBar.style.width = `${Math.min(Math.max((score / 1.5) * 100, 0), 100)}%`;
                 } else {
-                    scoreBar.className = "bg-red-500 h-3 transition-all duration-500";
-                    decisionBadge.textContent = "拒绝：低于阈值，转通用回答";
-                    decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-red-600 text-white";
+                    nodeDecision.textContent = reason;
+                    const normalizedScore = Math.min(Math.max(score, 0), threshold * 2 || 1.0);
+                    let percentage = threshold > 0 ? (normalizedScore / (threshold * 2 || 1.0)) * 100 : 0;
+                    percentage = Math.min(Math.max(percentage, 0), 100);
+                    scoreBar.style.width = `${percentage}%`;
+
+                    if (data.need_rag) {
+                        scoreBar.className = "bg-green-500 h-3 transition-all duration-500";
+                        decisionBadge.textContent = `通过：${reason}`;
+                        decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-green-600 text-white";
+                    } else {
+                        scoreBar.className = "bg-red-500 h-3 transition-all duration-500";
+                        decisionBadge.textContent = `拒绝：${reason}`;
+                        decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-red-600 text-white";
+                    }
                 }
 
                 if (data.chunks && data.chunks.length > 0) {

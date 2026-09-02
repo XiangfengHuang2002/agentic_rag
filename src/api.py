@@ -60,19 +60,31 @@ async def chat_stream_generator(query: str):
 
         if AGENT_MODE == "react" and hasattr(current_agent, "run_react_query"):
             retrieved_chunks = current_agent.retriever.search(query, top_k=5)
+            decision_data = _build_decision_data(retrieved_chunks)
+            decision_data["mode"] = "react"
+            decision_data["need_rag"] = bool(retrieved_chunks)
+            decision_data["reason"] = (
+                "ReAct 迭代中：正在使用召回证据，不属于通用回答"
+                if retrieved_chunks
+                else "ReAct 迭代中：未命中证据，退回到通用回答"
+            )
+
             yield {"event": "node", "data": json.dumps({
                 "node": "retrieve",
                 "message": f"初始检索召回 {len(retrieved_chunks)} 条候选",
             }, ensure_ascii=False)}
-            yield {"event": "decision", "data": json.dumps(
-                _build_decision_data(retrieved_chunks), ensure_ascii=False
-            )}
+            yield {"event": "decision", "data": json.dumps(decision_data, ensure_ascii=False)}
             yield {"event": "node", "data": json.dumps({
                 "node": "react",
-                "message": "正在执行 ReAct 推理循环",
+                "message": "正在执行 ReAct 推理循环：先观察召回证据，再决定下一步动作",
+                "step": 1,
+                "action": "search",
+                "score": decision_data.get("score", 0.0),
+                "need_rag": decision_data["need_rag"],
+                "evidence_count": len(retrieved_chunks),
             }, ensure_ascii=False)}
             answer = current_agent.run_react_query(query, retrieved_chunks)
-            yield {"event": "result", "data": json.dumps({"answer": answer})}
+            yield {"event": "result", "data": json.dumps({"answer": answer, "mode": "react"})}
             return
         
         retrieved_chunks = current_agent.retriever.search(query, top_k=5)
@@ -104,11 +116,12 @@ async def chat_stream_generator(query: str):
                 pass
 
             yield {
-                "event": "decision", 
+                "event": "decision",
                 "data": json.dumps({
-                    "need_rag": need_rag, 
+                    "need_rag": need_rag,
                     "score": float(highest_vector_sim),
                     "threshold": THRESHOLD,
+                    "reason": "高于阈值，转入知识增强回答" if need_rag else "低于阈值，转通用回答",
                     "chunks": chunks_data
                 })
             }
@@ -167,10 +180,12 @@ def _build_decision_data(retrieved_chunks: list) -> dict:
         }
 
     score = float(max(chunk.get("vector_sim", 0.0) for chunk in retrieved_chunks))
+    need_rag = score >= THRESHOLD
     return {
-        "need_rag": score >= THRESHOLD,
+        "need_rag": need_rag,
         "score": score,
         "threshold": THRESHOLD,
+        "reason": "高于阈值，转入知识增强回答" if need_rag else "低于阈值，转通用回答",
         "chunks": [
             {
                 "content": chunk.get("content", ""),
