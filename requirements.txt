@@ -13,3 +13,4 @@ seaborn
 sse_starlette
 fastapi
 uvicorn
+python-multipart

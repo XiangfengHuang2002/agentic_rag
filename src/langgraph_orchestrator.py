@@ -106,7 +106,7 @@ class LangGraphAgent:
     def _build_react_prompt(self, query: str, messages: list, steps: int, observation: str = "") -> list:
         return [
             {"role": "system", "content": (
-                "你是游戏知识助手。你可以使用一个工具：search_knowledge(query)。\n"
+                "你是《最终幻想14》游戏知识助手。你可以使用一个工具：search_knowledge(query)。\n"
                 "每轮只能输出一行：行动: search\n查询: 你的检索词，或行动: final\n答案: 你的最终答案。\n"
                 "需要事实依据时先检索；已有足够依据时直接回答。不要编造知识。"
                 f"当前已执行步数: {steps}。"

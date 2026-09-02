@@ -1,17 +1,45 @@
 import json
 import asyncio
 import uvicorn
+from uuid import uuid4
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from src.config import AGENT_MODE, VECTOR_SEARCH_THRESHOLD
 from src.langgraph_orchestrator import LangGraphAgent as OrchestratorAgent
 from src.agent import GameAgent
+from src.data_preparation import DataPreparationPipeline
 
 agent = None
 THRESHOLD = float(VECTOR_SEARCH_THRESHOLD)
+
+
+async def _run_preparation_task(pipeline: DataPreparationPipeline, raw_text: str, source_name: str):
+    try:
+        await asyncio.to_thread(pipeline.prepare_from_text, raw_text, source_name)
+    except Exception as exc:
+        pipeline.progress.update({
+            "status": "failed",
+            "stage": "error",
+            "message": str(exc),
+            "percent": 0,
+            "source_name": source_name,
+        })
+
+
+async def _run_raw_import_task(pipeline: DataPreparationPipeline):
+    try:
+        await asyncio.to_thread(pipeline.prepare_from_raw_dir, "data/raw")
+    except Exception as exc:
+        pipeline.progress.update({
+            "status": "failed",
+            "stage": "error",
+            "message": str(exc),
+            "percent": 0,
+            "source_name": "data/raw",
+        })
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,6 +54,7 @@ async def lifespan(app: FastAPI):
             print("使用常规模型 GameAgent 启动智能体（未检测到 LangGraph 编排器）")
 
         app.state.agent = agent
+        app.state.data_pipeline = DataPreparationPipeline()
         print("智能体 API 服务成功拉起，准备就绪。")
     except Exception as e:
         print(f"智能体初始化失败: {e}")
@@ -201,6 +230,89 @@ def chat_stream(query: str = Query(..., description="用户提问内容")):
     if not query.strip():
         raise HTTPException(status_code=400, detail="提问内容不能为空")
     return EventSourceResponse(chat_stream_generator(query))
+
+
+@app.get("/api/data/prepare/progress")
+async def get_data_preparation_progress():
+    pipeline = getattr(app.state, "data_pipeline", None)
+    if pipeline is None:
+        pipeline = DataPreparationPipeline()
+        app.state.data_pipeline = pipeline
+    return pipeline.progress
+
+
+@app.post("/api/data/prepare")
+async def prepare_data_source(
+    raw_text: str | None = Form(default=None),
+    source_name: str = Form(default="uploaded_text"),
+    file: UploadFile | None = File(default=None),
+):
+    pipeline = getattr(app.state, "data_pipeline", None)
+    if pipeline is None:
+        pipeline = DataPreparationPipeline()
+        app.state.data_pipeline = pipeline
+
+    try:
+        if file is not None and file.filename:
+            text = (await file.read()).decode("utf-8", errors="ignore")
+            source_name = file.filename.rsplit(".", 1)[0] if "." in file.filename else file.filename
+        elif raw_text is not None and raw_text.strip():
+            text = raw_text
+        else:
+            raise ValueError("请提供粘贴文本或上传文本文件")
+
+        job_id = str(uuid4())
+        pipeline.progress.update({
+            "job_id": job_id,
+            "status": "queued",
+            "stage": "received",
+            "message": "任务已排队，准备开始数据处理...",
+            "percent": 5,
+            "source_name": source_name,
+            "input_chars": len(text),
+        })
+        asyncio.create_task(_run_preparation_task(pipeline, text, source_name))
+        return {"status": "accepted", "job_id": job_id, "progress": pipeline.progress.copy()}
+    except Exception as exc:
+        pipeline.progress.update({
+            "status": "failed",
+            "stage": "error",
+            "message": str(exc),
+            "percent": 0,
+            "source_name": source_name,
+        })
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/data/raw/import")
+async def import_raw_directory():
+    pipeline = getattr(app.state, "data_pipeline", None)
+    if pipeline is None:
+        pipeline = DataPreparationPipeline()
+        app.state.data_pipeline = pipeline
+
+    try:
+        job_id = str(uuid4())
+        pipeline.progress.update({
+            "job_id": job_id,
+            "status": "queued",
+            "stage": "received",
+            "message": "data/raw 批量导入任务已排队...",
+            "percent": 5,
+            "source_name": "data/raw",
+        })
+        asyncio.create_task(_run_raw_import_task(pipeline))
+        return {"status": "accepted", "job_id": job_id, "progress": pipeline.progress.copy()}
+    except Exception as exc:
+        pipeline.progress.update({
+            "status": "failed",
+            "stage": "error",
+            "message": str(exc),
+            "percent": 0,
+            "source_name": "data/raw",
+        })
+        raise HTTPException(status_code=400, detail=str(exc))
+
 
 if __name__ == "__main__":
     uvicorn.run("src.api:app", host="0.0.0.0", port=8000, reload=True)
