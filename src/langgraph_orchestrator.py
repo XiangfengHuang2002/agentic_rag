@@ -12,7 +12,7 @@ from src.config import VECTOR_SEARCH_THRESHOLD, REACT_MAX_STEPS
 
 
 class LangGraphAgent:
-    """LangGraph 编排器：既保留传统 RAG 流程，也支持真正的 ReAct 图。"""
+    """编排器：只关注状态流转、路由和决策，不负责底层 LLM call 或 prompt 组装。"""
 
     def __init__(self):
         self.base_agent = GameAgent()
@@ -51,22 +51,7 @@ class LangGraphAgent:
             def call_llm_node(state: dict):
                 query = state.get("query", "")
                 chunks = state.get("retrieved_chunks") if state.get("need_rag") else []
-                context_text = "\n---\n".join([c.get("content", "") for c in chunks]) if chunks else ""
-                if context_text:
-                    system_prompt = (
-                        "你是一个精通《最终幻想14》游戏机制的助手。请严格根据以下提供的背景知识回答玩家的问题。"
-                        "如果背景知识中没有提到相关信息，请直接回答不知道，绝对不要编造。\n\n"
-                        f"背景知识：\n{context_text}"
-                    )
-                else:
-                    system_prompt = (
-                        "你是一个精通《最终幻想14》游戏机制的助手。如果玩家提问的内容不是游戏相关的机制或你无法确定的内容，"
-                        "请直接回答不知道，绝对不要编造。"
-                    )
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": query},
-                ]
+                messages = self.base_agent._build_rag_messages(query, chunks)
                 try:
                     state["answer"] = self.base_agent._call_llm(messages)
                 except Exception as e:
@@ -208,13 +193,7 @@ class LangGraphAgent:
                 evidence = state.get("observation", "")
                 answer = state.get("final_answer")
                 if not answer:
-                    messages = [{
-                        "role": "system",
-                        "content": "根据提供的检索结果回答。没有依据时只回答‘不知道’，不要编造。",
-                    }, {
-                        "role": "user",
-                        "content": f"问题：{query}\n检索结果：\n{evidence or '无'}",
-                    }]
+                    messages = self.base_agent._build_react_messages(query, evidence or "")
                     try:
                         answer = self.base_agent._call_llm(messages)
                     except Exception as e:

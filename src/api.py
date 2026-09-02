@@ -58,15 +58,15 @@ async def chat_stream_generator(query: str):
         if current_agent is None:
             raise RuntimeError("智能体尚未初始化完成，请检查应用启动状态")
 
-        if AGENT_MODE == "react" and hasattr(current_agent, "run_react_query"):
+        if AGENT_MODE != "rag" and hasattr(current_agent, "run_react_query"):
             retrieved_chunks = current_agent.retriever.search(query, top_k=5)
             decision_data = _build_decision_data(retrieved_chunks)
             decision_data["mode"] = "react"
             decision_data["need_rag"] = bool(retrieved_chunks)
             decision_data["reason"] = (
-                "ReAct 迭代中：正在使用召回证据，不属于通用回答"
+                "ReAct 决策中：命中检索证据，选择 RAG 分支继续回答"
                 if retrieved_chunks
-                else "ReAct 迭代中：未命中证据，退回到通用回答"
+                else "ReAct 决策中：未命中证据，退回到一般性回答或继续推理"
             )
 
             yield {"event": "node", "data": json.dumps({
