@@ -12,6 +12,11 @@ from src.config import (
 
 class WikiRetriever:
     def __init__(self, collection_name: str = "game_wiki"):
+        """初始化 ChromaDB 集合和 SiliconFlow 请求头。
+
+        输入：`collection_name`，要读取或创建的 ChromaDB 集合名。
+        输出：无；集合客户端和 HTTP 请求配置保存到实例属性。
+        """
         self.chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
         self.collection = self.chroma_client.get_or_create_collection(
             name=collection_name,
@@ -23,10 +28,21 @@ class WikiRetriever:
         }
 
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """计算两个向量的余弦相似度。
+
+        输入：`vec1`、`vec2`，长度相同的数值向量列表。
+        输出：浮点型余弦相似度。
+        """
         v1, v2 = np.array(vec1), np.array(vec2)
         return float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8))
 
     def _get_query_embedding(self, query: str) -> List[float]:
+        """调用 Embedding API 将用户问题转换为向量。
+
+        输入：`query`，待向量化的自然语言问题。
+        输出：模型返回的浮点向量列表。
+        异常：HTTP 请求失败或响应格式不正确时抛出异常。
+        """
         url = f"{SILICONFLOW_BASE_URL}/embeddings"
         payload = {
             "model": EMBEDDING_MODEL,
@@ -38,6 +54,12 @@ class WikiRetriever:
         return response.json()["data"][0]["embedding"]
 
     def _rerank_documents(self, query: str, documents: List[str]) -> List[Dict[str, Any]]:
+        """调用 Reranker API 对候选文档进行交叉重排。
+
+        输入：`query`，用户问题；`documents`，候选文档文本列表。
+        输出：按相关性排序的结果字典列表，包含文档文本和重排分数。
+        异常：HTTP 请求失败或响应格式不正确时抛出异常。
+        """
         url = f"{SILICONFLOW_BASE_URL}/rerank"
         payload = {
             "model": RERANK_MODEL,
@@ -51,6 +73,11 @@ class WikiRetriever:
         return response.json()["results"]
 
     def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        """召回、重排并返回带相似度分数的知识片段。
+
+        输入：`query`，用户问题；`top_k`，ChromaDB 初筛候选数量。
+        输出：结果字典列表，每项包含内容、元数据、`rerank_score` 和 `vector_sim`；外部 API 失败时返回空列表。
+        """
         print(f"收到用户提问: '{query}'，开始进行实时向量化并检索...")
         
         try:

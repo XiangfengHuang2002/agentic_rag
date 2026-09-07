@@ -18,6 +18,11 @@ MAX_EMBEDDING_CHARS = 1200
 import urllib3.util.connection as urllib3_cn
 
 def allowed_gateways():
+    """返回网络请求使用的地址族。
+
+    输入：无。
+    输出：`socket.AF_INET`，表示强制使用 IPv4。
+    """
     return socket.AF_INET  # 强制只使用 IPv4
 
 urllib3_cn.allowed_gateways = allowed_gateways
@@ -25,7 +30,11 @@ urllib3_cn.allowed_gateways = allowed_gateways
 
 
 def clean_wiki_text(raw_text: str) -> str:
-    """清洗 Wiki/HTML 富文本，保留可读正文。"""
+    """清洗 Wiki/HTML 富文本并保留可读正文。
+
+    输入：`raw_text`，原始 Wiki、HTML 或纯文本内容。
+    输出：去除标记、规范空白并保留链接文字后的纯文本；输入为 `None` 时返回空字符串。
+    """
     if raw_text is None:
         return ""
 
@@ -62,6 +71,11 @@ def clean_wiki_text(raw_text: str) -> str:
 
 
 def _wiki_template_to_text(template: str) -> str:
+    """提取 Wiki 模板中的可读文本或最后一个参数。
+
+    输入：`template`，包含 `{{...}}` 的模板字符串。
+    输出：模板参数中最适合作为正文的文本字符串。
+    """
     inner = template[2:-2].strip()
     if "|" in inner:
         parts = [p.strip() for p in inner.split("|") if p.strip()]
@@ -70,6 +84,11 @@ def _wiki_template_to_text(template: str) -> str:
 
 
 def _wiki_link_to_text(link: str) -> str:
+    """把 Wiki 链接语法转换为用户可读的链接标题。
+
+    输入：`link`，不含外层 `[[ ]]` 的 Wiki 链接内容。
+    输出：链接标题、去除命名空间后的名称或原始内容。
+    """
     content = link.strip()
     if "|" in content:
         return content.split("|")[-1]
@@ -79,7 +98,12 @@ def _wiki_link_to_text(link: str) -> str:
 
 
 def chunk_text(text: str, chunk_size: int = 350, overlap: int = 60) -> List[str]:
-    """将完整文本按句子边界切块，必要时使用滑动窗口，保证不丢字符。"""
+    """按自然句子边界和滑动窗口切分文本，保证不丢失尾部内容。
+
+    输入：`text`，待切分文本；`chunk_size`，单块最大字符数；`overlap`，相邻块重叠字符数。
+    输出：文本块字符串列表；空文本返回空列表。
+    异常：参数不满足窗口约束时抛出 `ValueError`。
+    """
     if not text or not text.strip():
         return []
     if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
@@ -121,6 +145,11 @@ class DataPreparationPipeline:
     """统一的数据准备 pipeline：清洗 -> 切块 -> embedding -> 写入 ChromaDB。"""
 
     def __init__(self, collection_name: str = "game_wiki"):
+        """初始化数据准备进度、ChromaDB 客户端和目标集合。
+
+        输入：`collection_name`，要写入或创建的 ChromaDB 集合名。
+        输出：无；实例保存进度状态和数据库集合句柄。
+        """
         self.collection_name = collection_name
         self.progress: Dict[str, Any] = {
             "status": "idle",
@@ -139,6 +168,11 @@ class DataPreparationPipeline:
         )
 
     def _set_progress(self, stage: str, message: str, percent: int, source_name: str | None = None, chunk_count: int = 0, total_chars: int = 0):
+        """更新当前数据准备任务的进度字典。
+
+        输入：阶段名、用户可读消息、百分比，以及可选来源名、块数和字符数。
+        输出：无；修改实例的 `progress` 属性。
+        """
         self.progress.update({
             "status": "running" if percent < 100 else "completed",
             "stage": stage,
@@ -150,6 +184,12 @@ class DataPreparationPipeline:
         })
 
     def _embedding_for_text(self, text: str) -> List[float]:
+        """调用 Embedding API 将一个知识块转换为向量。
+
+        输入：`text`，长度不超过 `MAX_EMBEDDING_CHARS` 的非空知识块。
+        输出：浮点型 embedding 向量列表。
+        异常：文本为空、超长、缺少 API Key 或远程请求失败时抛出异常。
+        """
         text = str(text).strip()
         if not text:
             raise ValueError("embedding 文本不能为空")
@@ -170,6 +210,11 @@ class DataPreparationPipeline:
         return item["embedding"]
 
     def _save_processed_text(self, file_name: str, cleaned_text: str):
+        """将清洗后的文本保存到 data 目录。
+
+        输入：`file_name`，输出文件名；`cleaned_text`，清洗后的文本。
+        输出：写入文件的字符串路径。
+        """
         output_dir = Path("data")
         output_dir.mkdir(parents=True, exist_ok=True)
         target_path = output_dir / file_name
@@ -177,6 +222,12 @@ class DataPreparationPipeline:
         return str(target_path)
 
     def prepare_from_text(self, raw_text: str, source_name: str = "uploaded_text") -> Dict[str, Any]:
+        """完成单个文本源的清洗、切块、向量化和 ChromaDB 入库。
+
+        输入：`raw_text`，原始文本；`source_name`，用于元数据、文件名和任务进度的来源名。
+        输出：包含状态、来源、处理文件、块数、字符数和最终进度的结果字典。
+        异常：源文本为空、清洗后无内容或 embedding/入库失败时抛出异常。
+        """
         source_name = (source_name or "uploaded_text").strip() or "uploaded_text"
         self.current_source = source_name
         self.progress.update({
@@ -233,6 +284,12 @@ class DataPreparationPipeline:
         }
 
     def prepare_from_raw_dir(self, raw_dir: str = "data/raw") -> Dict[str, Any]:
+        """批量处理目录下所有 `.txt` 文件。
+
+        输入：`raw_dir`，原始文本目录路径。
+        输出：包含成功状态、处理文件数量和每个文件结果的汇总字典。
+        异常：目录不存在或任一文件处理失败时抛出异常。
+        """
         raw_path = Path(raw_dir)
         if not raw_path.exists():
             raise FileNotFoundError(f"找不到原始文本目录：{raw_dir}")
@@ -251,5 +308,10 @@ class DataPreparationPipeline:
 
 
 def process_raw_directory(raw_dir: str = "data/raw") -> Dict[str, Any]:
+    """创建数据准备管线并批量处理原始文本目录。
+
+    输入：`raw_dir`，原始文本目录路径。
+    输出：`DataPreparationPipeline.prepare_from_raw_dir` 返回的汇总字典。
+    """
     pipeline = DataPreparationPipeline()
     return pipeline.prepare_from_raw_dir(raw_dir)
