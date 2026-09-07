@@ -15,7 +15,6 @@ class LangGraphAgent:
         """
         self.base_agent = GameAgent()
         self.retriever = self.base_agent.retriever
-        self.react_graph = None
         self.max_steps = int(REACT_MAX_STEPS)
 
         self._build_react_graph()
@@ -25,11 +24,8 @@ class LangGraphAgent:
 
         输入：`query`，用户的自然语言问题。
         输出：ReAct 图生成的最终回答字符串。
-        异常：图未初始化或未生成回答时抛出 `RuntimeError`。
+        异常：图未生成回答时抛出 `RuntimeError`；LangGraph 执行错误直接向上传递。
         """
-        if self.react_graph is None:
-            raise RuntimeError("ReAct 图初始化失败")
-
         result = self._invoke_graph(
             self.react_graph,
             {
@@ -96,20 +92,25 @@ class LangGraphAgent:
         return decision if not decision.startswith(("行动", "action")) else ""
 
     @staticmethod
-    def _build_react_prompt(query: str, messages: list, steps: int, observation: str = "") -> list:
+    def _build_react_prompt(
+        query: str, messages: list, steps: int, observation: str = ""
+    ) -> list:
         """构造一次 ReAct 决策所需的系统提示、用户问题和历史消息。
 
         输入：`query` 为原始问题，`messages` 为历史消息，`steps` 为已执行步数，`observation` 为上一轮观察。
         输出：可直接发送给对话模型的消息列表。
         """
         return [
-            {"role": "system", "content": (
-                "你是《最终幻想14》游戏知识助手。你可以使用一个工具：search_knowledge(query)。\n"
-                "每轮只能输出一行：行动: search\n查询: 你的检索词，或行动: final\n答案: 你的最终答案。\n"
-                "需要事实依据时先检索；已有足够依据时直接回答。不要编造知识。"
-                f"当前已执行步数: {steps}。"
-                f"\n上一步观察：\n{observation or '无'}"
-            )},
+            {
+                "role": "system",
+                "content": (
+                    "你是《最终幻想14》游戏知识助手。你可以使用一个工具：search_knowledge(query)。\n"
+                    "每轮只能输出一行：行动: search\n查询: 你的检索词，或行动: final\n答案: 你的最终答案。\n"
+                    "需要事实依据时先检索；已有足够依据时直接回答。不要编造知识。"
+                    f"当前已执行步数: {steps}。"
+                    f"\n上一步观察：\n{observation or '无'}"
+                ),
+            },
             {"role": "user", "content": query},
         ] + messages
 
@@ -156,104 +157,104 @@ class LangGraphAgent:
         """创建并编译 ReAct 图及其 agent、rag、final 节点。
 
         输入：无；使用实例中的检索器、底层 Agent 和最大步数配置。
-        输出：无；成功时写入 `self.react_graph`，失败时置为 `None`。
+        输出：无；编译后的图写入 `self.react_graph`。
         """
-        if not (StateGraph is not None):
-            self.react_graph = None
-            return
+        graph_builder = StateGraph(dict)
 
-        try:
-            graph_builder = StateGraph(dict)
+        def agent_node(state: dict):
+            """调用模型决定继续检索还是生成最终答案。
 
-            def agent_node(state: dict):
-                """调用模型决定继续检索还是生成最终答案。
+            输入：包含问题、历史消息和观察结果的图状态字典。
+            输出：更新行动、行动参数、答案和步数后的状态字典。
+            """
+            query = state.get("question", "")
+            steps = int(state.get("steps", 0))
+            messages = list(state.get("messages", []))
+            observation = state.get("observation", "")
+            prompt = self._build_react_prompt(query, messages, steps, observation)
+            try:
+                decision = self.base_agent._call_llm(prompt).strip()
+            except Exception as e:
+                decision = f"行动: final\n答案: 服务响应失败，请稍后重试。原因: {e}"
 
-                输入：包含问题、历史消息和观察结果的图状态字典。
-                输出：更新行动、行动参数、答案和步数后的状态字典。
-                """
-                query = state.get("question", "")
-                steps = int(state.get("steps", 0))
-                messages = list(state.get("messages", []))
-                observation = state.get("observation", "")
-                prompt = self._build_react_prompt(query, messages, steps, observation)
+            parsed = self._parse_react_decision(decision, query)
+            state["decision"] = parsed["decision"]
+            state["next_action"] = parsed["next_action"]
+            state["action_input"] = parsed["action_input"]
+            state["final_answer"] = parsed["final_answer"]
+            state["steps"] = steps + 1
+            state["messages"] = messages + [
+                {"role": "assistant", "content": decision}
+            ]
+            return state
+
+        def rag_node(state: dict):
+            """执行知识库检索，并把结果写入 ReAct 观察状态。
+
+            输入：包含 `action_input` 或 `question` 的图状态字典。
+            输出：补充检索片段、最高相似度、RAG 选择结果和观察文本的状态字典。
+            """
+            search_query = state.get("action_input") or state.get("question", "")
+            chunks = self.retriever.search(search_query, top_k=5)
+            highest_score = max(
+                (float(chunk.get("vector_sim", 0.0)) for chunk in chunks),
+                default=0.0,
+            )
+            observation = self._format_react_observation(chunks)
+            state["retrieved_chunks"] = chunks
+            state["highest_vector_sim"] = highest_score
+            state["rag_selected"] = highest_score >= float(VECTOR_SEARCH_THRESHOLD)
+            state["observation"] = observation
+            state["messages"] = list(state.get("messages", [])) + [
+                {
+                    "role": "user",
+                    "content": f"观察结果：\n{observation}\n请继续决定行动。",
+                }
+            ]
+            return state
+
+        def final_node(state: dict):
+            """根据已有行动答案或检索观察生成最终回答。
+
+            输入：包含问题、观察文本和可选 `final_answer` 的图状态字典。
+            输出：补充 `answer` 字段后的状态字典。
+            """
+            query = state.get("question", "")
+            evidence = state.get("observation", "")
+            answer = state.get("final_answer")
+            if not answer:
+                messages = self._build_final_messages(query, evidence)
                 try:
-                    decision = self.base_agent._call_llm(prompt).strip()
+                    answer = self.base_agent._call_llm(messages)
                 except Exception as e:
-                    decision = f"行动: final\n答案: 服务响应失败，请稍后重试。原因: {e}"
+                    answer = f"服务响应失败，请稍后重试。原因: {e}"
+            state["answer"] = answer
+            return state
 
-                parsed = self._parse_react_decision(decision, query)
-                state["decision"] = parsed["decision"]
-                state["next_action"] = parsed["next_action"]
-                state["action_input"] = parsed["action_input"]
-                state["final_answer"] = parsed["final_answer"]
-                state["steps"] = steps + 1
-                state["messages"] = messages + [{"role": "assistant", "content": decision}]
-                return state
+        def should_continue(state: dict):
+            """根据模型行动和步数上限选择下一个图节点。
 
-            def rag_node(state: dict):
-                """执行知识库检索，并把结果写入 ReAct 观察状态。
+            输入：包含 `next_action` 和 `steps` 的图状态字典。
+            输出：`search` 或 `final`，分别映射到 `rag` 节点或最终节点。
+            """
+            if (
+                state.get("next_action") == "search"
+                and int(state.get("steps", 0)) < self.max_steps
+            ):
+                return "search"
+            return "final"
 
-                输入：包含 `action_input` 或 `question` 的图状态字典。
-                输出：补充检索片段、最高相似度、RAG 选择结果和观察文本的状态字典。
-                """
-                search_query = state.get("action_input") or state.get("question", "")
-                chunks = self.retriever.search(search_query, top_k=5)
-                highest_score = max(
-                    (float(chunk.get("vector_sim", 0.0)) for chunk in chunks),
-                    default=0.0,
-                )
-                observation = self._format_react_observation(chunks)
-                state["retrieved_chunks"] = chunks
-                state["highest_vector_sim"] = highest_score
-                state["rag_selected"] = highest_score >= float(VECTOR_SEARCH_THRESHOLD)
-                state["observation"] = observation
-                state["messages"] = list(state.get("messages", [])) + [
-                    {"role": "user", "content": f"观察结果：\n{observation}\n请继续决定行动。"}
-                ]
-                return state
+        graph_builder.add_node("agent", agent_node)
+        graph_builder.add_node("rag", rag_node)
+        graph_builder.add_node("final", final_node)
+        graph_builder.add_conditional_edges(
+            "agent", should_continue, {"search": "rag", "final": "final"}
+        )
+        graph_builder.add_edge("rag", "agent")
+        graph_builder.add_edge(START, "agent")
+        graph_builder.add_edge("final", END)
 
-            def final_node(state: dict):
-                """根据已有行动答案或检索观察生成最终回答。
-
-                输入：包含问题、观察文本和可选 `final_answer` 的图状态字典。
-                输出：补充 `answer` 字段后的状态字典。
-                """
-                query = state.get("question", "")
-                evidence = state.get("observation", "")
-                answer = state.get("final_answer")
-                if not answer:
-                    messages = self._build_final_messages(query, evidence)
-                    try:
-                        answer = self.base_agent._call_llm(messages)
-                    except Exception as e:
-                        answer = f"服务响应失败，请稍后重试。原因: {e}"
-                state["answer"] = answer
-                return state
-
-            def should_continue(state: dict):
-                """根据模型行动和步数上限选择下一个图节点。
-
-                输入：包含 `next_action` 和 `steps` 的图状态字典。
-                输出：`search` 或 `final`，分别映射到 `rag` 节点或最终节点。
-                """
-                if (
-                    state.get("next_action") == "search"
-                    and int(state.get("steps", 0)) < self.max_steps
-                ):
-                    return "search"
-                return "final"
-
-            graph_builder.add_node("agent", agent_node)
-            graph_builder.add_node("rag", rag_node)
-            graph_builder.add_node("final", final_node)
-            graph_builder.add_conditional_edges("agent", should_continue, {"search": "rag", "final": "final"})
-            graph_builder.add_edge("rag", "agent")
-            graph_builder.add_edge(START, "agent")
-            graph_builder.add_edge("final", END)
-
-            self.react_graph = graph_builder.compile()
-        except Exception:
-            self.react_graph = None
+        self.react_graph = graph_builder.compile()
 
     @staticmethod
     def _build_final_messages(query: str, evidence: str) -> list:
@@ -286,9 +287,6 @@ class LangGraphAgent:
 
         输入：`graph` 为已编译图，`state` 为初始图状态字典。
         输出：LangGraph 返回的最终状态字典。
-        异常：图为空时抛出 `RuntimeError`，图执行异常向上抛出。
+        异常：LangGraph 执行异常直接向上传递。
         """
-        if graph is None:
-            raise RuntimeError("ReAct 图未初始化")
         return graph.invoke(state)
-
