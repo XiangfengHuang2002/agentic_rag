@@ -1,18 +1,23 @@
 import html
-import json
-import os
+import hashlib
 import re
 import socket
+import time
 from pathlib import Path
 from typing import Any, Dict, List
-from uuid import uuid4
 
 import chromadb
 import requests
 
-from src.config import CHROMA_DB_DIR, EMBEDDING_MODEL, SILICONFLOW_API_KEY, SILICONFLOW_BASE_URL
-
-MAX_EMBEDDING_CHARS = 1200
+from src.config import (
+    CHROMA_DB_DIR,
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_MAX_RETRIES,
+    EMBEDDING_MODEL,
+    MAX_EMBEDDING_CHARS,
+    SILICONFLOW_API_KEY,
+    SILICONFLOW_BASE_URL,
+)
 
 # ===== 强制使用 IPv4 解决 Windows DNS 解析问题 =====
 import urllib3.util.connection as urllib3_cn
@@ -183,31 +188,70 @@ class DataPreparationPipeline:
             "total_chars": total_chars,
         })
 
-    def _embedding_for_text(self, text: str) -> List[float]:
-        """调用 Embedding API 将一个知识块转换为向量。
-
-        输入：`text`，长度不超过 `MAX_EMBEDDING_CHARS` 的非空知识块。
-        输出：浮点型 embedding 向量列表。
-        异常：文本为空、超长、缺少 API Key 或远程请求失败时抛出异常。
-        """
-        text = str(text).strip()
-        if not text:
+    def _batch_embedding(self, texts: List[str]) -> List[List[float]]:
+        """批量调用 Embedding API；只对临时网络/5xx/429 错误重试。"""
+        if not texts:
+            return []
+        if EMBEDDING_BATCH_SIZE <= 0:
+            raise ValueError("EMBEDDING_BATCH_SIZE 必须大于 0")
+        normalized = [str(text).strip() for text in texts]
+        if any(not text for text in normalized):
             raise ValueError("embedding 文本不能为空")
-        if len(text) > MAX_EMBEDDING_CHARS:
+        if any(len(text) > MAX_EMBEDDING_CHARS for text in normalized):
             raise ValueError(f"单个 embedding chunk 不能超过 {MAX_EMBEDDING_CHARS} 字符，请先分块")
         if not SILICONFLOW_API_KEY:
             raise RuntimeError("未配置 SILICONFLOW_API_KEY，无法生成 embedding。")
 
         url = f"{SILICONFLOW_BASE_URL}/embeddings"
-        payload = {
-            "model": EMBEDDING_MODEL,
-            "input": text,
-            "encoding_format": "float",
-        }
-        response = requests.post(url, headers={"Authorization": f"Bearer {SILICONFLOW_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=60)
-        response.raise_for_status()
-        item = response.json()["data"][0]
-        return item["embedding"]
+        headers = {"Authorization": f"Bearer {SILICONFLOW_API_KEY}", "Content-Type": "application/json"}
+        payload = {"model": EMBEDDING_MODEL, "input": normalized, "encoding_format": "float"}
+        last_error = None
+        for attempt in range(EMBEDDING_MAX_RETRIES + 1):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                if response.status_code == 429 or response.status_code >= 500:
+                    response.raise_for_status()
+                response.raise_for_status()
+                items = sorted(response.json()["data"], key=lambda item: item.get("index", 0))
+                embeddings = [item["embedding"] for item in items]
+                if len(embeddings) != len(normalized):
+                    raise RuntimeError("embedding 返回数量与请求文本数量不一致")
+                return embeddings
+            except (requests.RequestException, KeyError, IndexError, RuntimeError) as exc:
+                last_error = exc
+                if attempt >= EMBEDDING_MAX_RETRIES:
+                    break
+                time.sleep(2 ** attempt)
+        raise RuntimeError(f"批量 embedding 失败，已重试 {EMBEDDING_MAX_RETRIES} 次: {last_error}") from last_error
+
+    def _embedding_for_text(self, text: str) -> List[float]:
+        """兼容单条调用，实际复用批量 embedding 实现。"""
+        return self._batch_embedding([text])[0]
+
+    def _source_hash(self, cleaned_text: str) -> str:
+        return hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()
+
+    def _existing_chunks(self, source_name: str, source_hash: str) -> Dict[int, str]:
+        """返回同一来源、同一文本版本已经入库的 chunk ID。"""
+        results = self.collection.get(
+            where={"$and": [{"source": source_name}, {"source_hash": source_hash}]},
+            include=["metadatas"],
+        )
+        existing: Dict[int, str] = {}
+        for chunk_id, metadata in zip(results.get("ids", []), results.get("metadatas", [])):
+            if metadata and metadata.get("chunk_index") is not None:
+                existing[int(metadata["chunk_index"])] = chunk_id
+        return existing
+
+    def _delete_old_source(self, source_name: str, source_hash: str):
+        """来源内容更新时删除旧版本，避免检索同时命中过期数据。"""
+        old = self.collection.get(where={"source": source_name}, include=["metadatas"])
+        old_ids = [
+            chunk_id for chunk_id, metadata in zip(old.get("ids", []), old.get("metadatas", []))
+            if not metadata or metadata.get("source_hash") != source_hash
+        ]
+        if old_ids:
+            self.collection.delete(ids=old_ids)
 
     def _save_processed_text(self, file_name: str, cleaned_text: str):
         """将清洗后的文本保存到 data 目录。
@@ -249,6 +293,21 @@ class DataPreparationPipeline:
         })
 
         cleaned_text = clean_wiki_text(source_text)
+        source_hash = self._source_hash(cleaned_text)
+        existing = self._existing_chunks(source_name, source_hash)
+        if existing:
+            expected_chunk_count = len(chunk_text(cleaned_text))
+            if len(existing) == expected_chunk_count:
+                self._set_progress("indexing", "该来源内容已存在，跳过重复入库。", 100, source_name, expected_chunk_count, len(cleaned_text))
+                return {
+                    "status": "skipped",
+                    "message": f"来源 '{source_name}' 内容未变化，已跳过重复处理",
+                    "source_name": source_name,
+                    "chunk_count": expected_chunk_count,
+                    "total_chars": len(cleaned_text),
+                    "progress": self.progress.copy(),
+                }
+
         self._set_progress("cleaning", "正在清洗 Wiki/HTML 标记并去除噪声...", 30, source_name, total_chars=len(cleaned_text))
 
         chunks = chunk_text(cleaned_text)
@@ -257,19 +316,21 @@ class DataPreparationPipeline:
         if not chunks:
             raise ValueError("清洗后没有可入库的文本内容")
 
-        embeddings: List[List[float]] = []
-        for index, chunk in enumerate(chunks, 1):
-            embeddings.append(self._embedding_for_text(chunk))
-            progress = int(60 + (index / max(1, len(chunks))) * 30)
-            self._set_progress("embedding", f"正在生成 embedding（{index}/{len(chunks)}）...", progress, source_name, chunk_count=len(chunks), total_chars=len(cleaned_text))
+        pending = [(index, chunk) for index, chunk in enumerate(chunks) if index not in existing]
+        for batch_start in range(0, len(pending), EMBEDDING_BATCH_SIZE):
+            batch = pending[batch_start:batch_start + EMBEDDING_BATCH_SIZE]
+            batch_embeddings = self._batch_embedding([chunk for _, chunk in batch])
+            ids = [f"{source_name}-{source_hash[:16]}-{index}" for index, _ in batch]
+            metadatas = [
+                {"source": source_name, "source_hash": source_hash, "chunk_index": index, "length": len(chunk)}
+                for index, chunk in batch
+            ]
+            self._set_progress("embedding", f"正在生成 embedding（{min(batch_start + len(batch), len(pending))}/{len(pending)}）...", 60 + int((min(batch_start + len(batch), len(pending)) / len(chunks)) * 30), source_name, len(chunks), len(cleaned_text))
+            self._set_progress("indexing", f"正在写入 chunk（{min(batch_start + len(batch), len(pending))}/{len(chunks)}）...", 95, source_name, len(chunks), len(cleaned_text))
+            self.collection.add(documents=[chunk for _, chunk in batch], embeddings=batch_embeddings, metadatas=metadatas, ids=ids)
 
-        if not embeddings:
-            raise RuntimeError("未生成任何 embedding")
-
-        ids = [f"{source_name}-{uuid4()}" for _ in chunks]
-        metadatas = [{"source": source_name, "chunk_index": index, "length": len(chunk)} for index, chunk in enumerate(chunks)]
-        self._set_progress("indexing", "正在将知识块写入 ChromaDB...", 95, source_name, chunk_count=len(chunks), total_chars=len(cleaned_text))
-        self.collection.add(documents=chunks, embeddings=embeddings, metadatas=metadatas, ids=ids)
+        # 新版本全部成功后再清理旧版本，失败时保留原有可检索数据。
+        self._delete_old_source(source_name, source_hash)
 
         processed_path = self._save_processed_text(f"{source_name}.txt", cleaned_text)
         self._set_progress("indexing", "清洗后的文本和 embedding 已写入 ChromaDB，流程完成。", 100, source_name, chunk_count=len(chunks), total_chars=len(cleaned_text))
