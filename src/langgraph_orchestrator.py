@@ -1,75 +1,19 @@
-try:
-    from langgraph.graph import StateGraph, START, END
-    LANGGRAPH_AVAILABLE = True
-except Exception:
-    StateGraph = None
-    START = None
-    END = None
-    LANGGRAPH_AVAILABLE = False
+from langgraph.graph import StateGraph, START, END
 
 from src.agent import GameAgent
 from src.config import VECTOR_SEARCH_THRESHOLD, REACT_MAX_STEPS
 
 
 class LangGraphAgent:
-    """编排器：只关注状态流转、路由和决策，不负责底层 LLM call 或 prompt 组装。"""
+    """ReAct 编排器：RAG 只作为图中的检索节点。"""
 
     def __init__(self):
         self.base_agent = GameAgent()
         self.retriever = self.base_agent.retriever
-        self.graph = None
         self.react_graph = None
         self.max_steps = int(REACT_MAX_STEPS)
 
-        self._build_standard_graph()
         self._build_react_graph()
-
-    def _build_standard_graph(self):
-        if not (LANGGRAPH_AVAILABLE and StateGraph is not None):
-            self.graph = None
-            return
-
-        try:
-            graph_builder = StateGraph(dict)
-
-            def retrieve_node(state: dict):
-                query = state.get("query", "")
-                state["retrieved_chunks"] = self.retriever.search(query, top_k=5)
-                return "decide"
-
-            def decide_node(state: dict):
-                chunks = state.get("retrieved_chunks") or []
-                if chunks:
-                    highest = float(max(c.get("vector_sim", 0.0) for c in chunks))
-                    state["highest_vector_sim"] = highest
-                    state["need_rag"] = highest >= float(VECTOR_SEARCH_THRESHOLD)
-                else:
-                    state["highest_vector_sim"] = 0.0
-                    state["need_rag"] = False
-                return "call_llm"
-
-            def call_llm_node(state: dict):
-                query = state.get("query", "")
-                chunks = state.get("retrieved_chunks") if state.get("need_rag") else []
-                messages = self.base_agent._build_rag_messages(query, chunks)
-                try:
-                    state["answer"] = self.base_agent._call_llm(messages)
-                except Exception as e:
-                    state["answer"] = f"LLM 调用失败: {e}"
-                return END
-
-            graph_builder.add_node("retrieve", retrieve_node)
-            graph_builder.add_node("decide", decide_node)
-            graph_builder.add_node("call_llm", call_llm_node)
-
-            graph_builder.add_edge(START, "retrieve")
-            graph_builder.add_edge("retrieve", "decide")
-            graph_builder.add_edge("decide", "call_llm")
-            graph_builder.add_edge("call_llm", END)
-
-            self.graph = graph_builder.compile()
-        except Exception:
-            self.graph = None
 
     @staticmethod
     def _format_react_observation(chunks: list) -> str:
@@ -150,7 +94,7 @@ class LangGraphAgent:
         }
 
     def _build_react_graph(self):
-        if not (LANGGRAPH_AVAILABLE and StateGraph is not None):
+        if not (StateGraph is not None):
             self.react_graph = None
             return
 
@@ -177,11 +121,17 @@ class LangGraphAgent:
                 state["messages"] = messages + [{"role": "assistant", "content": decision}]
                 return state
 
-            def search_node(state: dict):
+            def rag_node(state: dict):
                 search_query = state.get("action_input") or state.get("question", "")
                 chunks = self.retriever.search(search_query, top_k=5)
+                highest_score = max(
+                    (float(chunk.get("vector_sim", 0.0)) for chunk in chunks),
+                    default=0.0,
+                )
                 observation = self._format_react_observation(chunks)
                 state["retrieved_chunks"] = chunks
+                state["highest_vector_sim"] = highest_score
+                state["rag_selected"] = highest_score >= float(VECTOR_SEARCH_THRESHOLD)
                 state["observation"] = observation
                 state["messages"] = list(state.get("messages", [])) + [
                     {"role": "user", "content": f"观察结果：\n{observation}\n请继续决定行动。"}
@@ -202,15 +152,18 @@ class LangGraphAgent:
                 return state
 
             def should_continue(state: dict):
-                if state.get("next_action") == "search":
+                if (
+                    state.get("next_action") == "search"
+                    and int(state.get("steps", 0)) < self.max_steps
+                ):
                     return "search"
                 return "final"
 
             graph_builder.add_node("agent", agent_node)
-            graph_builder.add_node("search", search_node)
+            graph_builder.add_node("rag", rag_node)
             graph_builder.add_node("final", final_node)
-            graph_builder.add_conditional_edges("agent", should_continue, {"search": "search", "final": "final"})
-            graph_builder.add_edge("search", "agent")
+            graph_builder.add_conditional_edges("agent", should_continue, {"search": "rag", "final": "final"})
+            graph_builder.add_edge("rag", "agent")
             graph_builder.add_edge(START, "agent")
             graph_builder.add_edge("final", END)
 
@@ -232,24 +185,6 @@ class LangGraphAgent:
         except Exception:
             return None
         return None
-
-    def run_query(self, query: str) -> str:
-        """Execute the graph if available, otherwise fallback to sequential run."""
-        if self.graph is not None:
-            try:
-                state = {"query": query}
-                result = self._invoke_graph(self.graph, state)
-                if isinstance(result, dict):
-                    return result.get("answer")
-                if isinstance(state, dict):
-                    return state.get("answer")
-            except Exception:
-                pass
-
-        return self._sequential_run(query)
-
-    def _sequential_run(self, query: str) -> str:
-        return self.base_agent.run_query(query)
 
     def run_react_query(self, query: str, initial_chunks: list | None = None) -> str:
         """真正的 ReAct 图执行入口。"""

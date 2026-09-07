@@ -122,15 +122,15 @@ uvicorn src.api:app --host 127.0.0.1 --port 8000
 
 ## LangGraph 集成说明
 
-本项目可选使用 LangGraph 做为编排层以明确将检索、判定、生成等步骤拆解为节点。关键点：
+本项目使用 LangGraph 作为唯一编排层，以 ReAct 为主线，将检索作为其中的 `rag` 节点。关键点：
 
-- 节点：`retrieve`（检索 Top-K）、`decide`（基于向量相似度/重排得分判定是否需要 RAG）、`call_llm`（传入已构造的 prompt 并调用模型）。
+- 节点：`agent`（决定下一步行动）、`rag`（检索 Top-K 并形成观察结果）、`final`（生成最终回答）。
 - 接口契约：如果启用了 LangGraph 编排器，服务层会尝试实例化 `src.langgraph_orchestrator.LangGraphAgent`；编排器应至少暴露：
-  - `run_query(query: str) -> str`：按编排流程返回最终字符串回答（可选，用于完整编排模式）。
+  - `run_react_query(query: str) -> str`：执行 ReAct 图并返回最终字符串回答。
   - `base_agent`（可选）：当需要直接调用底层模型时，`base_agent` 应包含 `_call_llm(messages)` 用于传入已构造的 `messages`。
 - SSE 事件：编排器在执行过程中应通过 API 层发送 `node` 事件来报告当前 LangGraph 节点与内部日志，前端可据此展示当前节点名称与运行信息。事件字段示例：
   ```json
-  {"node":"retrieve","message":"检索到 5 条候选"}
+  {"node":"rag","message":"检索到 5 条候选"}
   ```
 
 启用方法：在项目根安装依赖并启动服务后（见快速上手），单独打开 `index.html`，输入问题并观察侧栏中的检索节点、决策流和召回片段。若通过静态服务器提供页面，请确保后端地址为 `http://127.0.0.1:8000` 且 CORS 配置允许访问。
@@ -139,7 +139,7 @@ uvicorn src.api:app --host 127.0.0.1 --port 8000
 
 ## 7. 工业级项目演进计划（Agentic RAG 2.0）
 
-> 本节描述下一阶段的建设计划。当前项目已经具备本地 RAG、重排、阈值门控、可选 ReAct、LangGraph 编排和 SSE 事件；术语标准化、Wiki 按需抓取、缓存和智能路由属于后续计划，不代表已经实现。
+> 本节描述下一阶段的建设计划。当前项目已经具备以 ReAct 为主线的 LangGraph 编排、本地 RAG 节点、重排、阈值门控和 SSE 事件；术语标准化、Wiki 按需抓取、缓存和智能路由属于后续计划，不代表已经实现。
 
 ### 7.1 建设目标
 
