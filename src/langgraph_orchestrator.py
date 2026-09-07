@@ -15,6 +15,29 @@ class LangGraphAgent:
 
         self._build_react_graph()
 
+    def run_react_query(self, query: str) -> str:
+        """执行 ReAct 图并返回最终答案。"""
+        if self.react_graph is None:
+            raise RuntimeError("ReAct 图初始化失败")
+
+        result = self._invoke_graph(
+            self.react_graph,
+            {
+                "question": query,
+                "messages": [{"role": "user", "content": query}],
+                "steps": 0,
+                "observation": "",
+                "retrieved_chunks": [],
+                "final_answer": "",
+                "answer": "",
+            },
+        )
+        if isinstance(result, dict):
+            answer = result.get("answer") or result.get("final_answer")
+            if answer:
+                return answer
+        raise RuntimeError("ReAct 图未生成最终答案")
+
     @staticmethod
     def _format_react_observation(chunks: list) -> str:
         if not chunks:
@@ -47,7 +70,8 @@ class LangGraphAgent:
                 return decision.split(marker, 1)[1].strip()
         return decision if not decision.startswith(("行动", "action")) else ""
 
-    def _build_react_prompt(self, query: str, messages: list, steps: int, observation: str = "") -> list:
+    @staticmethod
+    def _build_react_prompt(query: str, messages: list, steps: int, observation: str = "") -> list:
         return [
             {"role": "system", "content": (
                 "你是《最终幻想14》游戏知识助手。你可以使用一个工具：search_knowledge(query)。\n"
@@ -143,7 +167,7 @@ class LangGraphAgent:
                 evidence = state.get("observation", "")
                 answer = state.get("final_answer")
                 if not answer:
-                    messages = self.base_agent._build_react_messages(query, evidence or "")
+                    messages = self._build_final_messages(query, evidence)
                     try:
                         answer = self.base_agent._call_llm(messages)
                     except Exception as e:
@@ -171,45 +195,29 @@ class LangGraphAgent:
         except Exception:
             self.react_graph = None
 
+    @staticmethod
+    def _build_final_messages(query: str, evidence: str) -> list:
+        if evidence:
+            return [
+                {
+                    "role": "system",
+                    "content": "根据提供的检索结果回答。没有依据时只回答‘不知道’，不要编造。",
+                },
+                {
+                    "role": "user",
+                    "content": f"问题：{query}\n检索结果：\n{evidence}",
+                },
+            ]
+        return [
+            {
+                "role": "system",
+                "content": "如果无法从知识库中准确确认事实，请直接回答不知道，不要编造。",
+            },
+            {"role": "user", "content": query},
+        ]
+
     def _invoke_graph(self, graph, state: dict):
         if graph is None:
-            return None
+            raise RuntimeError("ReAct 图未初始化")
+        return graph.invoke(state)
 
-        try:
-            if hasattr(graph, "invoke"):
-                return graph.invoke(state)
-            if hasattr(graph, "run"):
-                return graph.run(state)
-            if hasattr(graph, "execute"):
-                return graph.execute(state)
-        except Exception:
-            return None
-        return None
-
-    def run_react_query(self, query: str, initial_chunks: list | None = None) -> str:
-        """真正的 ReAct 图执行入口。"""
-        if self.react_graph is not None:
-            initial_state = {
-                "question": query,
-                "messages": [{"role": "user", "content": query}],
-                "steps": 0,
-                "max_steps": self.max_steps,
-                "observation": "",
-                "retrieved_chunks": initial_chunks or [],
-                "final_answer": "",
-                "answer": "",
-                "done": False,
-            }
-            result = self._invoke_graph(self.react_graph, initial_state)
-            if isinstance(result, dict):
-                answer = result.get("answer") or result.get("final_answer")
-                if answer:
-                    return answer
-
-        return self.base_agent.run_react_query(query, initial_chunks)
-
-    # 兼容性 shim：暴露 _call_llm 以匹配 GameAgent API
-    def _call_llm(self, messages: list) -> str:
-        if hasattr(self, "base_agent") and hasattr(self.base_agent, "_call_llm"):
-            return self.base_agent._call_llm(messages)
-        raise AttributeError("底层 agent 不包含 _call_llm 方法")
