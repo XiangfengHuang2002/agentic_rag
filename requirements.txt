@@ -14,3 +14,4 @@ sse_starlette
 fastapi
 uvicorn
 python-multipart
+mwparserfromhell

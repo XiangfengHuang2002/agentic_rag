@@ -1,5 +1,6 @@
 import json
 import asyncio
+import queue
 import uvicorn
 from uuid import uuid4
 from contextlib import asynccontextmanager
@@ -118,7 +119,25 @@ async def chat_stream_generator(query: str):
             "step": 1,
             "action": "decide",
         }, ensure_ascii=False)}
-        answer = current_agent.run_react_query(query)
+        events = queue.Queue()
+        task = asyncio.create_task(asyncio.to_thread(
+            current_agent.run_react_query,
+            query,
+            events.put,
+        ))
+
+        while not task.done() or not events.empty():
+            while True:
+                try:
+                    event = events.get_nowait()
+                except queue.Empty:
+                    break
+                event_name = event.pop("event", "node")
+                yield {"event": event_name, "data": json.dumps(event, ensure_ascii=False)}
+            if not task.done():
+                await asyncio.sleep(0.05)
+
+        answer = await task
         yield {"event": "result", "data": json.dumps({"answer": answer, "mode": "react"}, ensure_ascii=False)}
         return
     except Exception as e:

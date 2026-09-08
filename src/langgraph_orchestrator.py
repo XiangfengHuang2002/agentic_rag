@@ -19,7 +19,7 @@ class LangGraphAgent:
 
         self._build_react_graph()
 
-    def run_react_query(self, query: str) -> str:
+    def run_react_query(self, query: str, event_callback=None) -> str:
         """执行 ReAct 图并返回最终回答。
 
         输入：`query`，用户的自然语言问题。
@@ -36,6 +36,7 @@ class LangGraphAgent:
                 "retrieved_chunks": [],
                 "final_answer": "",
                 "answer": "",
+                "event_callback": event_callback,
             },
         )
         if isinstance(result, dict):
@@ -186,6 +187,25 @@ class LangGraphAgent:
             state["messages"] = messages + [
                 {"role": "assistant", "content": decision}
             ]
+            callback = state.get("event_callback")
+            if callback:
+                callback({
+                    "event": "node",
+                    "node": "agent",
+                    "message": "ReAct 正在决定下一步动作",
+                    "step": state["steps"],
+                    "action": parsed["next_action"],
+                    "decision": decision,
+                })
+                callback({
+                    "event": "decision",
+                    "mode": "react",
+                    "reason": "ReAct 已完成一次行动决策",
+                    "step": state["steps"],
+                    "action": parsed["next_action"],
+                    "decision": decision,
+                    "need_rag": parsed["next_action"] == "search",
+                })
             return state
 
         def rag_node(state: dict):
@@ -211,6 +231,29 @@ class LangGraphAgent:
                     "content": f"观察结果：\n{observation}\n请继续决定行动。",
                 }
             ]
+            callback = state.get("event_callback")
+            if callback:
+                callback({
+                    "event": "node",
+                    "node": "rag",
+                    "message": f"检索完成，召回 {len(chunks)} 条候选证据",
+                    "step": state.get("steps", 0),
+                    "action": "search",
+                    "score": highest_score,
+                    "need_rag": state["rag_selected"],
+                    "evidence_count": len(chunks),
+                    "chunks": chunks,
+                })
+                callback({
+                    "event": "decision",
+                    "mode": "react",
+                    "reason": "已完成知识库检索并更新观察结果",
+                    "step": state.get("steps", 0),
+                    "action": "search",
+                    "score": highest_score,
+                    "need_rag": state["rag_selected"],
+                    "chunks": chunks,
+                })
             return state
 
         def final_node(state: dict):
@@ -229,6 +272,17 @@ class LangGraphAgent:
                 except Exception as e:
                     answer = f"服务响应失败，请稍后重试。原因: {e}"
             state["answer"] = answer
+            callback = state.get("event_callback")
+            if callback:
+                callback({
+                    "event": "node",
+                    "node": "final",
+                    "message": "已生成最终回答",
+                    "step": state.get("steps", 0),
+                    "action": "final",
+                    "score": state.get("highest_vector_sim", 0.0),
+                    "evidence_count": len(state.get("retrieved_chunks", [])),
+                })
             return state
 
         def should_continue(state: dict):

@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 import chromadb
 import requests
+from src.mediawiki_parser import parse_mediawiki
 
 from src.config import (
     CHROMA_DB_DIR,
@@ -43,36 +44,7 @@ def clean_wiki_text(raw_text: str) -> str:
     if raw_text is None:
         return ""
 
-    text = str(raw_text)
-    text = html.unescape(text)
-
-    replacements = [
-        (r"<br\s*/?>", "\n", False),
-        (r"<\s*/?\s*(div|p|blockquote|li|ul|ol|tr|td|th|table|span|section|article|b|strong|i|em|code|pre)\s*>", " ", False),
-        (r"<[^>]+>", " ", False),
-        (r"\{\{.*?\}\}", lambda m: _wiki_template_to_text(m.group(0)), True),
-        (r"\[\[(.*?)\]\]", lambda m: _wiki_link_to_text(m.group(1)), True),
-        (r"\[[^\]]*\]\s*", " ", False),
-        (r"\[https?://[^\s\]]+\s+([^\]]+)\]", r"\1", False),
-        (r"\[https?://[^\]]+\]", " ", False),
-        (r"^==+\s*(.*?)\s*==+\s*$", r"\1\n", True),
-        (r"^===\s*(.*?)\s*===\s*$", r"\1\n", True),
-    ]
-
-    for pattern, repl, use_callable in replacements:
-        if use_callable:
-            text = re.sub(pattern, repl, text, flags=re.S)
-        else:
-            text = re.sub(pattern, repl, text, flags=re.S | re.I)
-
-    text = text.replace("\r", "\n")
-    text = re.sub(r"\n+", "\n", text)
-    text = re.sub(r"\s+\n\s+", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r"\s+", " ", text)
-    text = text.replace("\u200b", "")
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
-    return text.strip()
+    return parse_mediawiki(str(raw_text)).plain_text
 
 
 def _wiki_template_to_text(template: str) -> str:
@@ -292,7 +264,18 @@ class DataPreparationPipeline:
             "input_chars": len(str(raw_text)),
         })
 
-        cleaned_text = clean_wiki_text(source_text)
+        parsed_document = parse_mediawiki(source_text)
+        cleaned_text = parsed_document.plain_text
+        template_summary = {
+            name: len(records)
+            for name, records in parsed_document.templates_by_name.items()
+        }
+        self.progress.update({
+            "heading_count": len(parsed_document.headings),
+            "link_count": len(parsed_document.links),
+            "template_count": len(parsed_document.templates),
+            "templates_by_name": template_summary,
+        })
         source_hash = self._source_hash(cleaned_text)
         existing = self._existing_chunks(source_name, source_hash)
         if existing:
@@ -305,6 +288,7 @@ class DataPreparationPipeline:
                     "source_name": source_name,
                     "chunk_count": expected_chunk_count,
                     "total_chars": len(cleaned_text),
+                    "templates_by_name": template_summary,
                     "progress": self.progress.copy(),
                 }
 
@@ -322,7 +306,13 @@ class DataPreparationPipeline:
             batch_embeddings = self._batch_embedding([chunk for _, chunk in batch])
             ids = [f"{source_name}-{source_hash[:16]}-{index}" for index, _ in batch]
             metadatas = [
-                {"source": source_name, "source_hash": source_hash, "chunk_index": index, "length": len(chunk)}
+                {
+                    "source": source_name,
+                    "source_hash": source_hash,
+                    "chunk_index": index,
+                    "length": len(chunk),
+                    "template_names": ",".join(sorted({template.name for template in parsed_document.templates})),
+                }
                 for index, chunk in batch
             ]
             self._set_progress("embedding", f"正在生成 embedding（{min(batch_start + len(batch), len(pending))}/{len(pending)}）...", 60 + int((min(batch_start + len(batch), len(pending)) / len(chunks)) * 30), source_name, len(chunks), len(cleaned_text))
@@ -341,6 +331,10 @@ class DataPreparationPipeline:
             "processed_path": processed_path,
             "chunk_count": len(chunks),
             "total_chars": len(cleaned_text),
+            "heading_count": len(parsed_document.headings),
+            "link_count": len(parsed_document.links),
+            "template_count": len(parsed_document.templates),
+            "templates_by_name": template_summary,
             "progress": self.progress.copy(),
         }
 
