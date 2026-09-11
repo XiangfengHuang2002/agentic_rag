@@ -1,4 +1,3 @@
-import html
 import hashlib
 import re
 import socket
@@ -45,33 +44,6 @@ def clean_wiki_text(raw_text: str) -> str:
         return ""
 
     return parse_mediawiki(str(raw_text)).plain_text
-
-
-def _wiki_template_to_text(template: str) -> str:
-    """提取 Wiki 模板中的可读文本或最后一个参数。
-
-    输入：`template`，包含 `{{...}}` 的模板字符串。
-    输出：模板参数中最适合作为正文的文本字符串。
-    """
-    inner = template[2:-2].strip()
-    if "|" in inner:
-        parts = [p.strip() for p in inner.split("|") if p.strip()]
-        return parts[-1] if parts else ""
-    return inner
-
-
-def _wiki_link_to_text(link: str) -> str:
-    """把 Wiki 链接语法转换为用户可读的链接标题。
-
-    输入：`link`，不含外层 `[[ ]]` 的 Wiki 链接内容。
-    输出：链接标题、去除命名空间后的名称或原始内容。
-    """
-    content = link.strip()
-    if "|" in content:
-        return content.split("|")[-1]
-    if ":" in content and "/" not in content:
-        return content.split(":", 1)[-1]
-    return content
 
 
 def chunk_text(text: str, chunk_size: int = 350, overlap: int = 60) -> List[str]:

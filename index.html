@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Wiki RAG 监控看板</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
+
 <body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col">
 
     <header class="bg-gray-800 p-4 border-b border-gray-700 shadow-md">
@@ -17,24 +19,31 @@
             <div class="p-4 border-b border-gray-700 bg-gray-900">
                 <div class="flex items-center justify-between mb-3">
                     <h2 class="text-sm font-semibold uppercase tracking-wider text-gray-400">数据准备</h2>
-                    <button id="import-raw-btn" class="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded text-sm">导入 data/raw</button>
+                    <button id="import-raw-btn"
+                        class="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded text-sm">导入
+                        data/raw</button>
                 </div>
 
                 <div class="grid grid-cols-1 gap-3">
                     <label class="block">
                         <span class="text-xs text-gray-400 mb-1 block">导入来源名</span>
-                        <input id="source-name" type="text" value="user_upload" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500">
+                        <input id="source-name" type="text" value="user_upload"
+                            class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500">
                     </label>
                     <label class="block">
                         <span class="text-xs text-gray-400 mb-1 block">粘贴源文本</span>
-                        <textarea id="raw-text" rows="5" class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500" placeholder="粘贴 wiki 页面正文、攻略文本或者任务说明..."></textarea>
+                        <textarea id="raw-text" rows="5"
+                            class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500"
+                            placeholder="粘贴 wiki 页面正文、攻略文本或者任务说明..."></textarea>
                     </label>
                     <div class="flex items-center gap-2">
-                        <label class="flex-1 cursor-pointer bg-gray-800 border border-dashed border-gray-600 rounded px-3 py-2 text-sm text-gray-300 hover:border-cyan-500">
+                        <label
+                            class="flex-1 cursor-pointer bg-gray-800 border border-dashed border-gray-600 rounded px-3 py-2 text-sm text-gray-300 hover:border-cyan-500">
                             <input id="source-file" type="file" class="hidden" accept=".txt,.md,.json,.html">
                             选择文本文件上传
                         </label>
-                        <button id="prepare-btn" class="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded text-sm font-medium">开始导入并构建向量库</button>
+                        <button id="prepare-btn"
+                            class="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded text-sm font-medium">开始导入并构建向量库</button>
                     </div>
                 </div>
             </div>
@@ -45,7 +54,8 @@
                     <span id="prepare-stage" class="text-cyan-300 font-semibold">未开始</span>
                 </div>
                 <div class="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
-                    <div id="prepare-progress-bar" class="bg-cyan-500 h-3 transition-all duration-500" style="width:0%"></div>
+                    <div id="prepare-progress-bar" class="bg-cyan-500 h-3 transition-all duration-500" style="width:0%">
+                    </div>
                 </div>
                 <div id="prepare-progress-text" class="mt-2 text-sm text-gray-300">等待导入源文本...</div>
             </div>
@@ -56,25 +66,35 @@
                 </div>
             </div>
             <div class="p-4 bg-gray-900 border-t border-gray-700 flex gap-2">
-                <input id="user-input" type="text" class="flex-1 bg-gray-800 border border-gray-600 rounded px-4 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="输入关于游戏机制的提问...">
-                <button id="send-btn" class="bg-cyan-600 hover:bg-cyan-500 text-white px-6 py-2 rounded font-medium transition">发送</button>
+                <input id="user-input" type="text"
+                    class="flex-1 bg-gray-800 border border-gray-600 rounded px-4 py-2 text-white focus:outline-none focus:border-cyan-500"
+                    placeholder="输入关于游戏机制的提问...">
+                <button id="send-btn"
+                    class="bg-cyan-600 hover:bg-cyan-500 text-white px-6 py-2 rounded font-medium transition">发送</button>
             </div>
         </div>
 
         <div class="w-1/2 p-6 overflow-y-auto space-y-6 bg-gray-900">
-            <h2 class="text-lg font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-2">RAG 实时思考追踪</h2>
+            <h2 class="text-lg font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-2">RAG
+                实时思考追踪</h2>
 
             <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-4">
                 <h3 class="text-sm font-medium text-gray-400">数据处理流水线</h3>
                 <div class="grid grid-cols-5 gap-2 text-[11px]">
-                    <div id="pipe-raw" class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">原始 Wiki</div>
-                    <div id="pipe-clean" class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">清洗</div>
-                    <div id="pipe-chunk" class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">切块</div>
-                    <div id="pipe-embed" class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">向量化</div>
-                    <div id="pipe-store" class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">入库</div>
+                    <div id="pipe-raw"
+                        class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">原始 Wiki
+                    </div>
+                    <div id="pipe-clean"
+                        class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">清洗</div>
+                    <div id="pipe-chunk"
+                        class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">切块</div>
+                    <div id="pipe-embed"
+                        class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">向量化</div>
+                    <div id="pipe-store"
+                        class="rounded border border-gray-700 bg-gray-900 px-2 py-3 text-center text-gray-300">入库</div>
                 </div>
             </div>
-            
+
             <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-3">
                 <h3 class="text-sm font-medium text-gray-400">当前执行状态</h3>
                 <div id="status-monitor" class="text-cyan-400 font-mono text-sm">等待输入指令...</div>
@@ -119,7 +139,8 @@
                     <span class="text-red-400 font-semibold">防幻觉阈值 (0.35)</span>
                     <span>强相关 (1.5+)</span>
                 </div>
-                <div id="decision-badge" class="inline-block px-3 py-1 rounded text-xs font-bold bg-gray-700 text-gray-400">
+                <div id="decision-badge"
+                    class="inline-block px-3 py-1 rounded text-xs font-bold bg-gray-700 text-gray-400">
                     未触发决策
                 </div>
             </div>
@@ -130,7 +151,9 @@
                     <span>当前节点</span>
                     <span id="current-node" class="font-bold text-cyan-300">等待输入</span>
                 </div>
-                <div id="node-log" class="max-h-40 overflow-y-auto text-xs text-gray-300 space-y-1 bg-gray-900 p-2 rounded border border-gray-700"></div>
+                <div id="node-log"
+                    class="max-h-40 overflow-y-auto text-xs text-gray-300 space-y-1 bg-gray-900 p-2 rounded border border-gray-700">
+                </div>
             </div>
 
             <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-3">
@@ -175,7 +198,7 @@
         let preparationPollingTimer = null;
 
         sendBtn.addEventListener('click', startChat);
-        userInput.addEventListener('keydown', (e) => { if(e.key === 'Enter') startChat(); });
+        userInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startChat(); });
         prepareBtn.addEventListener('click', prepareDataSource);
         importRawBtn.addEventListener('click', importRawDirectory);
         sourceFileInput.addEventListener('change', async function () {
@@ -311,7 +334,7 @@
 
         function startChat() {
             const query = userInput.value.trim();
-            if(!query) return;
+            if (!query) return;
 
             appendMessage('user', query);
             userInput.value = '';
@@ -330,7 +353,6 @@
             reactEvidence.textContent = '0 条';
             reactScore.textContent = '0.0000';
             reactSummary.textContent = '等待进入 ReAct 推理循环...';
-            chunksContainer.innerHTML = '<div class="text-gray-500 text-sm italic">正在检索向量库...</div>';
 
             const answerDiv = appendMessage('assistant', '正在思考...');
 
@@ -414,19 +436,18 @@
                         const card = document.createElement('div');
                         card.className = "bg-gray-800 p-3 rounded border border-gray-700 space-y-1 text-xs";
                         card.innerHTML = `
-                            <div class="flex justify-between font-semibold text-gray-400">
-                                <span class="text-cyan-400">Chunk #${i+1}</span>
-                                <span>原始相似度: <span class="text-white">${chunk.vector_sim.toFixed(4)}</span> | 重排得分: <span class="text-white">${chunk.rerank_score.toFixed(4)}</span></span>
-                            </div>
-                            <p class="text-gray-300 font-mono mt-1 whitespace-pre-line leading-relaxed">${chunk.content}</p>
-                        `;
+                <div class="flex justify-between font-semibold text-gray-400">
+                    <span class="text-cyan-400">Chunk #${i + 1}</span>
+                    <span>原始相似度: <span class="text-white">${chunk.vector_sim.toFixed(4)}</span> | 重排得分: <span class="text-white">${chunk.rerank_score.toFixed(4)}</span></span>
+                </div>
+                <p class="text-gray-300 font-mono mt-1 whitespace-pre-line leading-relaxed">${chunk.content}</p>
+            `;
                         chunksContainer.appendChild(card);
                     });
-                } else {
+                } else if (data.action === "search") {
                     chunksContainer.innerHTML = '<div class="text-gray-500 text-sm italic">未命中或未采用任何知识切片</div>';
                 }
             });
-
             eventSource.addEventListener('evaluation', (e) => {
                 const data = JSON.parse(e.data);
                 const statusText = data.answer_correct ? '答案通过检查' : '答案未通过检查';
@@ -454,7 +475,7 @@
 
         function appendMessage(sender, text) {
             const div = document.createElement('div');
-            if(sender === 'user') {
+            if (sender === 'user') {
                 div.className = "bg-cyan-700 text-white p-3 rounded-lg max-w-[80%] ml-auto text-right";
             } else {
                 div.className = "bg-gray-800 p-3 rounded-lg max-w-[80%] text-gray-300 font-sans leading-relaxed";
@@ -466,4 +487,5 @@
         }
     </script>
 </body>
+
 </html>

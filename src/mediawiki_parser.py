@@ -6,6 +6,9 @@ from typing import Any, Dict, List
 
 import mwparserfromhell
 from mwparserfromhell.nodes import Comment, ExternalLink, Heading, Tag, Template, Text, Wikilink
+from src.action_mapping import merge_action_mapping
+
+ACTION_ID_NAME = merge_action_mapping()
 
 
 @dataclass
@@ -57,7 +60,8 @@ class MediaWikiDocument:
 def _clean_display_text(value: str) -> str:
     value = html.unescape(value)
     value = re.sub(r"'{2,5}", "", value)
-    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r"[ \t\f\v]+", " ", value)
+    value = re.sub(r"\n[ \t]*", "\n", value)
     return value.strip()
 
 
@@ -67,18 +71,51 @@ def _template_record(node: Template) -> TemplateRecord:
     positional: List[str] = []
     for parameter in node.params:
         key = _clean_display_text(str(parameter.name))
-        value = _clean_display_text(str(parameter.value))
+        value = _clean_display_text(_node_text(mwparserfromhell.parse(str(parameter.value))))
         if parameter.showkey:
             parameters[key] = value
         else:
             positional.append(value)
 
-    preferred_keys = ("text", "title", "name", "名称", "显示", "display", "label")
-    display_text = next((parameters[key] for key in preferred_keys if parameters.get(key)), "")
-    if not display_text:
-        display_text = next((value for value in reversed(positional) if value), "")
-    if not display_text and name.lower() not in {"color", "黑幕", "需要长期更新"}:
-        display_text = name
+    normalized_name = name.casefold()
+    display_modes = {"text", "list", "icon", "link", "plain", "raw"}
+    meaningful = [value for value in positional if value.casefold() not in display_modes]
+    display_text = ""
+    if normalized_name in {"xh", "技能伤害"}:
+        display_text = meaningful[0] if meaningful else ""
+        damage_type = meaningful[1] if len(meaningful) > 1 else ""
+        if damage_type and damage_type != "无":
+            display_text = f"{display_text}({damage_type})"
+    elif normalized_name == "xl":
+        display_text = meaningful[0] if meaningful else ""
+    elif name in {"状态", "技能", "物品", "副本", "任务", "地图", "版本", "成就", "Fate", "天气", "货币"}:
+        action_id = parameters.get("id", "")
+        if name == "技能" and action_id and not meaningful:
+            display_text = ACTION_ID_NAME.get(action_id, f"技能(id={action_id})")
+        elif name == "成就" and len(meaningful) > 1:
+            display_text = meaningful[1]
+        else:
+            display_text = meaningful[0] if meaningful else ""
+        if name == "状态" and parameters.get("id") and display_text:
+            display_text = f"{display_text}({parameters['id']})"
+        elif not display_text and action_id:
+            display_text = f"{name}(id={action_id})"
+        elif not display_text:
+            display_text = name
+    elif normalized_name == "role":
+        display_text = meaningful[-1] if meaningful else parameters.get("text", "")
+    elif name == "对话":
+        if len(meaningful) >= 2:
+            display_text = f"{meaningful[0]}：{meaningful[1]}"
+        elif meaningful:
+            display_text = meaningful[0]
+    elif normalized_name in {"color", "黑幕", "需要长期更新"}:
+        display_text = meaningful[-1] if meaningful else parameters.get("text", "")
+    else:
+        preferred_keys = ("text", "title", "name", "名称", "显示", "display", "label")
+        display_text = next((parameters[key] for key in preferred_keys if parameters.get(key)), "")
+        if not display_text:
+            display_text = meaningful[0] if meaningful else name
 
     return TemplateRecord(
         name=name,
@@ -92,6 +129,16 @@ def _template_record(node: Template) -> TemplateRecord:
 def _link_record(node: Wikilink) -> LinkRecord:
     target = _clean_display_text(str(node.title))
     label = _clean_display_text(str(node.text)) if node.text is not None else target
+    target_prefix = target.split(":", 1)[0].casefold()
+    is_media_link = (
+        target_prefix in {"file", "文件", "image"}
+        or bool(re.match(r"^(?:file|image|文件)\s*:", target, re.I))
+        or bool(re.search(r"\.(?:png|jpe?g|gif|webp|svg)(?:$|\?)", target, re.I))
+    )
+    if is_media_link:
+        parts = [part.strip() for part in label.split("|")]
+        captions = [part for part in parts if part and "=" not in part and not re.fullmatch(r"\d+(?:x\d+)?(?:像素|px)?", part, re.I)]
+        label = captions[-1] if captions else ""
     namespace = target.split(":", 1)[0] if ":" in target else ""
     section = target.split("#", 1)[1] if "#" in target else ""
     return LinkRecord(target=target, label=label or target, namespace=namespace, section=section, raw=str(node))
@@ -116,17 +163,53 @@ def _node_text(code: mwparserfromhell.wikicode.Wikicode) -> str:
             if record.display_text:
                 output.append(record.display_text)
         elif isinstance(node, Wikilink):
-            output.append(_link_record(node).label)
+            link = _link_record(node)
+            if _is_media_target(str(node.title)):
+                output.append(_media_caption(str(node.text) if node.text is not None else ""))
+            else:
+                output.append(link.label)
         elif isinstance(node, ExternalLink):
             output.append(_external_link_record(node).label)
         elif isinstance(node, Heading):
             output.append(_node_text(node.title))
         elif isinstance(node, Tag):
+            if node.tag.lower() == "br":
+                output.append("\n")
+                continue
+            if node.tag.lower() == "gallery":
+                output.append(_gallery_text(node.contents))
+                continue
             if node.contents is not None:
                 output.append(_node_text(node.contents))
         else:
             output.append(str(node))
     return "".join(output)
+
+
+def _gallery_text(contents: Any) -> str:
+    if contents is None:
+        return ""
+    lines = []
+    for line in str(contents).splitlines():
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) > 1 and parts[-1]:
+            lines.append(parts[-1])
+    return "\n".join(lines)
+
+
+def _is_media_target(target: str) -> bool:
+    return bool(re.search(r"(?:^|:)(?:file|image|文件)\s*:", target, re.I) or re.search(r"\.(?:png|jpe?g|gif|webp|svg)(?:$|\?)", target, re.I))
+
+
+def _media_caption(text: str) -> str:
+    parts = [part.strip() for part in text.split("|")]
+    captions = [
+        part for part in parts
+        if part
+        and "=" not in part
+        and not re.fullmatch(r"\d+(?:x\d+)?(?:像素|px)?", part, re.I)
+    ]
+    return captions[-1] if captions else ""
 
 
 def _normalize_plain_text(text: str) -> str:

@@ -67,8 +67,10 @@
 
 ```text
 agentic_rag/
-├── docs_raw/               # 原始 Wiki 文本数据 (Raw Data)
-├── docs_clean/             # 经过正则清洗后的文本数据 (Processed Data)
+├── data/                   # 原始文本、清洗结果和技能映射表
+├── src/mediawiki_parser.py # MediaWiki 结构化解析
+├── src/data_preparation.py # 清洗、切块、向量化和入库
+├── src/action_mapping.py   # 技能 ID 映射生成
 ├── chroma_db/              # 持久化向量数据库 (BGE-M3 向量索引)
 ├── v0_baseline.ipynb       # 阶段0：基础 RAG 链路实现
 ├── v1_llm_judgment_qa.ipynb # 阶段1：引入 ReAct 逻辑与基础评测
@@ -101,6 +103,33 @@ pip install -r requirements.txt
 
 2. **API 配置**:
 在根目录创建 `.env` 文件并配置 `SILICONFLOW_API_KEY`。
+
+### 技能 ID 对照表
+
+项目提供 `src/action_mapping.py` 用于从 XIVAPI 分页生成 Action ID 对照表：
+
+```bash
+python -c "from src.action_mapping import fetch_action_mapping; fetch_action_mapping(page_size=1000)"
+```
+
+输出文件为 `data/action_id_name.json` 和 `data/action_id_name.csv`。MediaWiki 清洗器会自动读取该 JSON，因此 `{{技能|id=30|text}}` 会优先还原为对应技能名；没有映射的 ID 会保留为 `技能(id=30)`，不会静默丢失。
+
+XIVAPI 当前返回英文 Action 名称，灰机 Wiki 的接口存在访问限制。若要使用中文名，可准备 `data/action_id_name_zh.json` 或 `data/action_id_name_zh.csv`，格式如下，文件中的同 ID 名称会覆盖基础表：
+
+```json
+{
+  "30": "无敌",
+  "141": "火1"
+}
+```
+
+也可以尝试使用灰机 Wiki 增量抓取器：
+
+```bash
+python -c "from src.action_mapping import fetch_wiki_action_mapping; fetch_wiki_action_mapping(delay=0.5)"
+```
+
+该工具会遍历基础表中的 ID，从 `Data:Action/{id}.json` 提取中文字段，并持续写入 `data/action_id_name_zh.json`。如果站点返回 HTTP 403，请在浏览器中导出 Wiki 的 Action JSON/CSV 后保存为上述文件名；程序会优先使用中文覆盖表，未覆盖的 ID 才回退英文名或 `技能(id=...)`。
 
 ## 快速上手（本地演示）
 
