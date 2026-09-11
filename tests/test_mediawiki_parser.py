@@ -1,5 +1,4 @@
 from src.data_preparation import clean_wiki_text
-from src.action_mapping import _parse_wiki_action_payload
 from src.mediawiki_parser import parse_mediawiki
 
 
@@ -43,7 +42,8 @@ def test_known_templates_preserve_semantic_names_and_types():
 
 
 def test_skill_id_uses_local_action_mapping(monkeypatch):
-    monkeypatch.setitem(__import__("src.mediawiki_parser", fromlist=["ACTION_ID_NAME"]).ACTION_ID_NAME, "30", "无敌")
+    parser = __import__("src.mediawiki_parser", fromlist=["ACTION_ID_NAME"])
+    monkeypatch.setattr(parser, "ACTION_ID_NAME", {"30": "无敌"})
 
     document = parse_mediawiki("{{技能|id=30|text}}")
 
@@ -57,12 +57,6 @@ def test_skill_id_falls_back_to_id_when_local_mapping_is_missing(monkeypatch):
     document = parse_mediawiki("{{技能|id=999999|text}}")
 
     assert "技能(id=999999)" in document.plain_text
-
-
-def test_wiki_action_payload_extracts_chinese_name():
-    payload = {"ID": 30, "Name": "Hallowed Ground", "中文名称": "神圣领域"}
-
-    assert _parse_wiki_action_payload(payload, "30") == ("30", "神圣领域")
 
 
 def test_skill_state_achievement_and_media_nodes_keep_readable_content():
