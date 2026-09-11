@@ -150,7 +150,7 @@ XIVAPI 当前只返回英文 Action 名称。若要使用中文名，可准备 `
 }
 ```
 
-中文覆盖表的加载是自动的：`merge_action_mapping()`会在初始化时检查`data/action_id_name_zh.json`或`.csv`是否存在，存在则用中文名覆盖基础表中的同 ID 条目。未覆盖的 ID 回退英文名或`技能(id=...)`。
+XIVAPI 当前只返回英文 Action 名称。若要使用中文名，可准备 `data/action_id_name_zh.json`，手动替换 `data/action_id_name.json` 的内容，或修改清洗逻辑加载中文表。
 
 ## 快速上手（本地演示）
 

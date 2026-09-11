@@ -6,10 +6,9 @@ from typing import Any, Dict, List
 
 import mwparserfromhell
 from mwparserfromhell.nodes import Comment, ExternalLink, Heading, Tag, Template, Text, Wikilink
-from src.action_mapping import merge_action_mapping
+from src.action_mapping import load_action_mapping
 
-ACTION_ID_NAME = merge_action_mapping()
-
+ACTION_ID_NAME = load_action_mapping()
 
 @dataclass
 class TemplateRecord:
