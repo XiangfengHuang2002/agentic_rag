@@ -42,6 +42,10 @@
 所有实验版本在相同的检索配置（Top-K、Embedding 模型、Reranker）下进行对比，以保证性能差异主要来源于决策策略本身。
 
 ### 3.1 实验数据汇总
+测试问题：
+- Q1："什么是 Agentic RAG？"
+- Q2："‘G17 6张 底30w 挂件v10’是什么意思？"
+- Q3："月读极神的核心机制是什么？"
 
 | 实验版本 | 测试问题 | ROUGE-L | BERTScore (F1) | 版本核心特征 |
 | --- | --- | --- | --- | --- |
@@ -58,7 +62,7 @@
 
 ### 3.2 指标深度分析与选型权衡
 
-1. **语义一致性下限的提升** v3 版本通过将相似度得分作为硬性门禁，显式约束了 Agent 的可回答空间。该策略在部分场景（如 Q3）中虽然降低了字面重合度（ROUGE-L），但显著提升了语义一致性下限（BERTScore），体现了系统在垂直领域下从“生成优先”向“决策确定性优先”的转变。
+1. **语义一致性下限的提升与局部代价** v3 版本通过将相似度得分作为硬性门禁，显式约束了 Agent 的可回答空间。在 Q2（私域术语）场景中，BERTScore 从 0.5522 回升到 0.6302，验证了门控对幻觉的抑制作用；但在 Q3（精确机制查询）场景中，ROUGE-L 和 BERTScore 均出现下降（0.3478→0.1538，0.7176→0.6319），说明全局统一阈值在"机制细节"类问题上会误拒部分相关 chunk，需要更精细的阈值调优策略。
 2. **工程判定 vs 逻辑推理** 实验证实，在小规模参数模型处理垂直领域数据时，基于相似度得分的硬门控（Gatekeeping）比基于生成的改写（Rewriting）更能保证知识问答的准确性。这为 RAG 系统在私域知识库落地提供了一种低成本、高鲁棒性的工程方案。
 
 ---
@@ -67,18 +71,33 @@
 
 ```text
 agentic_rag/
-├── data/                   # 原始文本、清洗结果和技能映射表
-├── src/mediawiki_parser.py # MediaWiki 结构化解析
-├── src/data_preparation.py # 清洗、切块、向量化和入库
-├── src/action_mapping.py   # 技能 ID 映射生成
-├── chroma_db/              # 持久化向量数据库 (BGE-M3 向量索引)
-├── v0_baseline.ipynb       # 阶段0：基础 RAG 链路实现
-├── v1_llm_judgment_qa.ipynb # 阶段1：引入 ReAct 逻辑与基础评测
-├── v2_llm_judgment_full.ipynb # 阶段2：全量评测框架构建
-├── v3_threshold_optimized_rag.ipynb # 阶段3：最终阈值优化与 Rerank 决策版
-├── .env                    # 环境变量配置 (API Key)
-├── requirements.txt        # 项目依赖清单
-└── README.md               # 项目技术报告
+├── src/                          # 核心模块
+│   ├── api.py                    # FastAPI 服务与 SSE 流式接口
+│   ├── agent.py                  # 底层 RAG 执行器
+│   ├── config.py                 # 环境变量与常量配置
+│   ├── retriever.py              # 向量检索与重排
+│   ├── langgraph_orchestrator.py # ReAct 图编排
+│   ├── mediawiki_parser.py       # MediaWiki 结构化解析
+│   ├── data_preparation.py       # 清洗、切块、向量化和入库
+│   └── action_mapping.py         # 技能 ID 映射生成
+├── tests/                        # 单元测试
+│   ├── test_api.py
+│   ├── test_data_pipeline.py
+│   └── test_mediawiki_parser.py
+├── notebooks/                    # 技术演进实验
+│   ├── v0_baseline.ipynb
+│   ├── v1_llm_judgment_qa.ipynb
+│   ├── v2_llm_judgment_full.ipynb
+│   └── v3_threshold_optimized_rag.ipynb
+├── data/
+│   ├── raw/                      # 原始 Wiki 文本（导入前放这里）
+│   ├── action_id_name.json       # 技能 ID → 英文名映射
+│   └── action_id_name.csv        # 同上，CSV 格式
+├── chroma_db/                    # 持久化向量数据库
+├── index.html                    # 前端页面
+├── .env                          # 环境变量（API Key）
+├── requirements.txt              # 项目依赖清单
+└── README.md                     # 项目技术报告
 ```
 
 ---
@@ -90,9 +109,17 @@ agentic_rag/
 1. **确定性优于生成覆盖**: 实验证实，在包含大量复杂私域术语（如特定技能名、副本机制）的场景下，LLM 贸然执行“查询改写”极易导致语义偏离用户原意。采用基于重排得分（BGE-Reranker Score）与向量相似度的硬门禁（Gatekeeping）策略，能有效约束 Agent 的可回答空间，从工程层面抑制了幻觉产生。
 2. **语义一致性是核心指标**: 在垂直领域 RAG 的迭代中，单纯的文本重合度（ROUGE-L）无法完全反映系统质量。通过引入 BERTScore 并构建闭环评测流，本项目成功量化了 Agent 在逻辑一致性上的性能增益。
 
+### 5.1 已知限制
+
+- 本地知识库仅覆盖部分 Wiki 页面，未覆盖的内容会触发拒答。
+- 技能 ID 映射表当前只有英文名，中文名需手动准备 `action_id_name_zh.json`。
+- 全局统一阈值在"精确机制查询"类问题上表现不稳定（见 Q3）。
+- ReAct 模式下小参数模型可能出现输出格式偏差，依赖最大步数兜底。
+
 ---
 
 ## 6. 环境配置
+需要 Python 3.10 或更高版本。
 
 1. **依赖安装**:
 ```bash
@@ -114,7 +141,7 @@ python -c "from src.action_mapping import fetch_action_mapping; fetch_action_map
 
 输出文件为 `data/action_id_name.json` 和 `data/action_id_name.csv`。MediaWiki 清洗器会自动读取该 JSON，因此 `{{技能|id=30|text}}` 会优先还原为对应技能名；没有映射的 ID 会保留为 `技能(id=30)`，不会静默丢失。
 
-XIVAPI 当前返回英文 Action 名称，灰机 Wiki 的接口存在访问限制。若要使用中文名，可准备 `data/action_id_name_zh.json` 或 `data/action_id_name_zh.csv`，格式如下，文件中的同 ID 名称会覆盖基础表：
+XIVAPI 当前只返回英文 Action 名称。若要使用中文名，可准备 `data/action_id_name_zh.json` 或 `data/action_id_name_zh.csv`，格式如下，文件中的同 ID 名称会覆盖基础表：
 
 ```json
 {
@@ -123,13 +150,7 @@ XIVAPI 当前返回英文 Action 名称，灰机 Wiki 的接口存在访问限�
 }
 ```
 
-也可以尝试使用灰机 Wiki 增量抓取器：
-
-```bash
-python -c "from src.action_mapping import fetch_wiki_action_mapping; fetch_wiki_action_mapping(delay=0.5)"
-```
-
-该工具会遍历基础表中的 ID，从 `Data:Action/{id}.json` 提取中文字段，并持续写入 `data/action_id_name_zh.json`。如果站点返回 HTTP 403，请在浏览器中导出 Wiki 的 Action JSON/CSV 后保存为上述文件名；程序会优先使用中文覆盖表，未覆盖的 ID 才回退英文名或 `技能(id=...)`。
+中文覆盖表的加载是自动的：`merge_action_mapping()`会在初始化时检查`data/action_id_name_zh.json`或`.csv`是否存在，存在则用中文名覆盖基础表中的同 ID 条目。未覆盖的 ID 回退英文名或`技能(id=...)`。
 
 ## 快速上手（本地演示）
 
@@ -219,7 +240,7 @@ uvicorn src.api:app --host 127.0.0.1 --port 8000
 ### 7.4 分阶段实施路线
 
 ```text
-当前 v3/v4                 短期 v4.1                 中期 v4.2                 长期 v5
+当前（v3 + ReAct）         短期（术语映射）          中期（Wiki 按需获取）     长期（多工具 Agent）
 本地 RAG                   术语映射表                Wiki 按需获取              多工具 Agent
 阈值门控                   规则路由                  抓取与缓存                权限、反馈、监控
 ReAct / LangGraph          统一事件结构              来源引用                  自动评测与扩缩容
