@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from src.langgraph_orchestrator import LangGraphAgent as OrchestratorAgent
 from src.data_preparation import DataPreparationPipeline
+from src.config import VECTOR_SEARCH_THRESHOLD
 
 agent = None
 
@@ -112,6 +113,7 @@ async def chat_stream_generator(query: str):
         yield {"event": "decision", "data": json.dumps({
             "mode": "react",
             "reason": "ReAct 正在决定是否调用 RAG 检索节点",
+            "threshold": VECTOR_SEARCH_THRESHOLD,
         }, ensure_ascii=False)}
         yield {"event": "node", "data": json.dumps({
             "node": "agent",

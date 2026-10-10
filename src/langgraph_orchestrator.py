@@ -106,8 +106,10 @@ class LangGraphAgent:
                 "role": "system",
                 "content": (
                     "你是《最终幻想14》游戏知识助手。你可以使用一个工具：search_knowledge(query)。\n"
+                    "只有问题明确询问《最终幻想14》的游戏内容、机制、职业、技能、物品或游戏内术语时，才使用 search_knowledge。\n"
+                    "对于通用知识、AI/RAG/编程概念、项目架构或‘什么是 Agentic RAG’这类问题，不要检索 FF14 知识库，直接用已有知识回答。\n"
                     "每轮只能输出一行：行动: search\n查询: 你的检索词，或行动: final\n答案: 你的最终答案。\n"
-                    "需要事实依据时先检索；已有足够依据时直接回答。不要编造知识。"
+                    "FF14 问题需要事实依据时先检索；已有足够依据时直接回答。不要编造知识。"
                     f"当前已执行步数: {steps}。"
                     f"\n上一步观察：\n{observation or '无'}"
                 ),
@@ -204,7 +206,7 @@ class LangGraphAgent:
                     "step": state["steps"],
                     "action": parsed["next_action"],
                     "decision": decision,
-                    "need_rag": parsed["next_action"] == "search",
+                    "tool_requested": parsed["next_action"] == "search",
                 })
             return state
 
@@ -220,10 +222,12 @@ class LangGraphAgent:
                 (float(chunk.get("vector_sim", 0.0)) for chunk in chunks),
                 default=0.0,
             )
-            observation = self._format_react_observation(chunks)
-            state["retrieved_chunks"] = chunks
+            rag_selected = highest_score >= float(VECTOR_SEARCH_THRESHOLD)
+            accepted_chunks = chunks if rag_selected else []
+            observation = self._format_react_observation(accepted_chunks)
+            state["retrieved_chunks"] = accepted_chunks
             state["highest_vector_sim"] = highest_score
-            state["rag_selected"] = highest_score >= float(VECTOR_SEARCH_THRESHOLD)
+            state["rag_selected"] = rag_selected
             state["observation"] = observation
             state["messages"] = list(state.get("messages", [])) + [
                 {
@@ -236,13 +240,15 @@ class LangGraphAgent:
                 callback({
                     "event": "node",
                     "node": "rag",
-                    "message": f"检索完成，召回 {len(chunks)} 条候选证据",
+                    "message": f"检索完成，召回 {len(chunks)} 条候选证据，阈值通过 {len(accepted_chunks)} 条",
                     "step": state.get("steps", 0),
                     "action": "search",
                     "score": highest_score,
+                    "threshold": float(VECTOR_SEARCH_THRESHOLD),
                     "need_rag": state["rag_selected"],
-                    "evidence_count": len(chunks),
-                    "chunks": chunks,
+                    "evidence_count": len(accepted_chunks),
+                    "candidate_count": len(chunks),
+                    "chunks": accepted_chunks,
                 })
                 callback({
                     "event": "decision",
@@ -251,8 +257,9 @@ class LangGraphAgent:
                     "step": state.get("steps", 0),
                     "action": "search",
                     "score": highest_score,
+                    "threshold": float(VECTOR_SEARCH_THRESHOLD),
                     "need_rag": state["rag_selected"],
-                    "chunks": chunks,
+                    "chunks": accepted_chunks,
                 })
             return state
 

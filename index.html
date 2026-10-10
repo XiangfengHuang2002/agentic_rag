@@ -128,17 +128,18 @@
             <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 space-y-4">
                 <h3 class="text-sm font-medium text-gray-400">路由决策与知识可信度</h3>
                 <div class="flex items-center justify-between text-sm">
-                    <span>最高向量相似度 (Vector Distance):</span>
+                    <span>最高向量相似度 (Cosine Similarity):</span>
                     <span id="decision-score" class="font-bold text-white">0.0000</span>
                 </div>
-                <div class="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
-                    <div id="score-bar" class="bg-gray-500 h-3 transition-all duration-500" style="width: 0%"></div>
+                <div class="relative w-full bg-gray-700 rounded-full h-3">
+                    <div id="score-bar" class="bg-gray-500 h-3 rounded-full transition-all duration-500" style="width: 0%"></div>
+                    <div id="threshold-marker" class="absolute top-[-3px] h-[18px] border-l-2 border-red-300" style="left: 50%"></div>
                 </div>
                 <div class="flex justify-between text-xs text-gray-500">
-                    <span>不相关 (0.0)</span>
-                    <span class="text-red-400 font-semibold">防幻觉阈值 (0.35)</span>
-                    <span>强相关 (1.5+)</span>
+                    <span>0.0</span>
+                    <span>1.0</span>
                 </div>
+                <div id="threshold-label" class="text-xs text-red-300">防幻觉阈值 (配置加载中)</div>
                 <div id="decision-badge"
                     class="inline-block px-3 py-1 rounded text-xs font-bold bg-gray-700 text-gray-400">
                     未触发决策
@@ -392,10 +393,24 @@
 
             eventSource.addEventListener('decision', (e) => {
                 const data = JSON.parse(e.data);
-                const score = Number(data.score ?? 0);
                 const threshold = Number(data.threshold ?? 0.5);
+                const boundedThreshold = Math.min(Math.max(threshold, 0), 1);
+                document.getElementById('threshold-label').textContent = `防幻觉阈值: ${threshold.toFixed(2)}`;
+                document.getElementById('threshold-marker').style.left = `${boundedThreshold * 100}%`;
                 const isReactMode = String(data.mode || '').toLowerCase() === 'react' || /react/i.test(String(data.reason || ''));
                 const reason = data.reason || (data.need_rag ? '高于阈值，转入知识增强回答' : '低于阈值，转通用回答');
+
+                if (data.score === undefined || data.score === null || typeof data.need_rag !== 'boolean') {
+                    currentNode.textContent = isReactMode ? 'react' : '决策节点';
+                    nodeDecision.textContent = data.tool_requested
+                        ? 'Agent 请求检索，等待知识库分数与阈值门控结果'
+                        : reason;
+                    decisionBadge.textContent = '等待检索评分';
+                    decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-gray-700 text-gray-300";
+                    return;
+                }
+
+                const score = Number(data.score);
 
                 decisionScore.textContent = score.toFixed(4);
                 currentNode.textContent = isReactMode ? 'react' : '决策节点';
@@ -407,17 +422,20 @@
                     reactEvidence.textContent = `${evidenceCount} 条`;
                     reactScore.textContent = score.toFixed(4);
                     reactSummary.textContent = '观察到检索结果，ReAct 正在基于证据做下一步动作';
-                    nodeDecision.textContent = `ReAct 迭代：已接入 ${evidenceCount} 条召回证据，当前观察分数 ${score.toFixed(4)}`;
-                    scoreBar.className = "bg-cyan-500 h-3 transition-all duration-500";
-                    decisionBadge.textContent = reason;
-                    decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-cyan-600 text-white";
-                    scoreBar.style.width = `${Math.min(Math.max((score / 1.5) * 100, 0), 100)}%`;
+                    const passedThreshold = data.need_rag === true;
+                    nodeDecision.textContent = `ReAct 检索：余弦相似度 ${score.toFixed(4)}，阈值 ${threshold.toFixed(2)}，${passedThreshold ? '证据通过' : '证据未通过'}`;
+                    scoreBar.className = `h-3 rounded-full transition-all duration-500 ${passedThreshold ? 'bg-green-500' : 'bg-red-500'}`;
+                    scoreBar.style.width = `${Math.min(Math.max(score, 0), 1) * 100}%`;
+                    if (typeof data.need_rag === 'boolean') {
+                        decisionBadge.textContent = `${passedThreshold ? '通过' : '拒绝'}：${score.toFixed(4)} ${passedThreshold ? '≥' : '<'} ${threshold.toFixed(2)}`;
+                        decisionBadge.className = `inline-block px-3 py-1 rounded text-xs font-bold ${passedThreshold ? 'bg-green-600' : 'bg-red-600'} text-white`;
+                    } else {
+                        decisionBadge.textContent = reason;
+                        decisionBadge.className = "inline-block px-3 py-1 rounded text-xs font-bold bg-cyan-600 text-white";
+                    }
                 } else {
                     nodeDecision.textContent = reason;
-                    const normalizedScore = Math.min(Math.max(score, 0), threshold * 2 || 1.0);
-                    let percentage = threshold > 0 ? (normalizedScore / (threshold * 2 || 1.0)) * 100 : 0;
-                    percentage = Math.min(Math.max(percentage, 0), 100);
-                    scoreBar.style.width = `${percentage}%`;
+                    scoreBar.style.width = `${Math.min(Math.max(score, 0), 1) * 100}%`;
 
                     if (data.need_rag) {
                         scoreBar.className = "bg-green-500 h-3 transition-all duration-500";

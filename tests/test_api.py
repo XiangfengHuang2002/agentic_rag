@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api import app
+from src.config import VECTOR_SEARCH_THRESHOLD
 from src.data_preparation import DataPreparationPipeline
 
 
@@ -25,6 +26,7 @@ def test_chat_stream_and_prepare_progress_endpoints(client):
     assert stream_response.status_code == 200
     text = stream_response.text
     assert "event: status" in text or "event: result" in text
+    assert f'"threshold": {VECTOR_SEARCH_THRESHOLD}' in text
     assert "测试答案" in text or "测试问题" in text
 
     progress_response = client.get("/api/data/prepare/progress")
